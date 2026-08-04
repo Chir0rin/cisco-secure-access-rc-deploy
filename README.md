@@ -60,6 +60,66 @@ Optional:
 4. Run `sudo /opt/connector/install/connector.sh launch --name … --key …`
 5. Print dashboard follow-up (Confirm / Enable)
 
+## Uninstall
+
+Remove the connector from **Secure Access first**, then tear down the Docker host. Reversing the order can leave orphaned dashboard entries or a host that still runs containers.
+
+### 1. Secure Access dashboard
+
+1. **Connect → Network Connections → Connector Groups**
+2. Open the connector group → **Connectors** tab
+3. **Disable** the connector (stops forwarding; optional but recommended before delete)
+4. **Revoke** or **Delete** the connector in the dashboard
+
+Docs: [Disable, Revoke, or Delete a Connector](https://securitydocs.cisco.com/docs/csa/olh/120705.dita)
+
+### 2. On the Ubuntu host
+
+Stop the container and remove local connector state (replace `<connector_name>` if your install used a specific name):
+
+```bash
+sudo /opt/connector/install/connector.sh stop --destroy
+```
+
+Verify nothing is running:
+
+```bash
+sudo docker ps
+```
+
+### 3. Full local cleanup (reinstall or decommission)
+
+Remove Cisco install files under `/opt/connector`:
+
+```bash
+sudo rm -rf /opt/connector
+```
+
+Optional — remove leftover Docker images (only if you are not running other containers on this host):
+
+```bash
+sudo docker image ls
+sudo docker image rm ciscosecure/resource-connector:<tag>   # if listed
+```
+
+Optional — remove this repo clone:
+
+```bash
+cd ..
+rm -rf cisco-secure-access-rc-deploy
+```
+
+### 4. Redeploy on the same VM
+
+After uninstall steps 1–3, clone this repo again and run `./deploy.sh` with a **new or regenerated provisioning key** from the target connector group.
+
+### Uninstall references
+
+- [Stop the Container / Delete the Container (Docker)](https://securitydocs.cisco.com/docs/csa/olh/120727.dita)
+- [Stop a Connector](https://securitydocs.cisco.com/docs/csa/olh/120792.dita)
+- [Disable, Revoke, or Delete Resource Connectors and Groups](https://securitydocs.cisco.com/docs/csa/olh/120706.dita)
+- [Cisco TAC: stop --destroy and remove `/opt/connector`](https://www.cisco.com/c/en/us/support/docs/security/security-connector/225492-troubleshoot-secure-access-resource.html)
+
 ## Troubleshooting
 
 | Symptom | Check |
