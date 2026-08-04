@@ -39,18 +39,6 @@ cd cisco-secure-access-rc-deploy
 
 The script prompts for **connector name** and **provisioning key**, then installs and launches the connector. Approve `sudo` when prompted.
 
-**Automation (optional)** — skip prompts for CI or cloud-init:
-
-```bash
-sudo RC_NAME=rc-01 RC_PROVISIONING_KEY='<key>' ./deploy.sh
-```
-
-| Variable | Meaning |
-|---|---|
-| `RC_NAME` | Connector name |
-| `RC_PROVISIONING_KEY` | Provisioning key from the dashboard |
-| `RC_SETUP_URL` | Default: `https://us.repo.acgw.sse.cisco.com/scripts/latest/setup_connector.sh` |
-
 ## Uninstall
 
 Remove the connector from **Secure Access first**, then clean up the host.
