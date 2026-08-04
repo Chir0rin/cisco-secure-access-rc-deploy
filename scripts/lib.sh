@@ -53,6 +53,17 @@ validate_provisioning_key() {
   fi
 }
 
+print_deploy_inputs() {
+  cat <<'EOF'
+
+This script needs two values (prepare the key in Secure Access first):
+
+  1. Connector name     — your label for this host (e.g. rc-01)
+  2. Provisioning key   — connector group → View Provisioning Key
+
+EOF
+}
+
 prompt_connector_name() {
   if [[ -n "${RC_NAME:-}" ]]; then
     validate_connector_name "${RC_NAME}"

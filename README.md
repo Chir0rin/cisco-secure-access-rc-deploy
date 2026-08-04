@@ -2,17 +2,20 @@
 
 Deploy a **Cisco Secure Access Resource Connector** on **Ubuntu 22.04 LTS** (Docker host).
 
-Clone this repo on the RC VM, run one script, enter **connector name** and **provisioning key** — the wrapper downloads Cisco's official `setup_connector.sh`, installs the connector stack, and launches the container.
+Clone this repo on the RC VM and run `./deploy.sh`. The script asks for everything it needs on the host — no environment variables required for a normal install.
 
-## Before you start (Secure Access UI)
+## What you need
 
-1. Create a **Resource Connector Group** (name + region).
-2. Open **View Provisioning Key** for that group and copy the key.
-3. The key binds the connector to that group — you do **not** pass the group name on the host.
+| # | Item | Where |
+|---|---|---|
+| 1 | **Connector name** | You choose (1–40 chars: letters, digits, `-`, `_`) — e.g. `rc-01` |
+| 2 | **Provisioning key** | Secure Access → connector group → **View Provisioning Key** |
+
+Prepare the key in the dashboard **before** running the script. The key already ties the connector to that **Resource Connector Group** — you do not enter the group name on the host.
+
+After deployment: **Confirm** the connector in the dashboard, then **Enable** it.
 
 Official guide: [Deploy a Resource Connector in Docker](https://docs.sse.cisco.com/sse-user-guide/docs/deploy-a-resource-connector-in-docker)
-
-After deployment, in the dashboard: **Confirm** the connector, then **Enable** it.
 
 ## Requirements
 
@@ -29,24 +32,25 @@ After deployment, in the dashboard: **Confirm** the connector, then **Enable** i
 ```bash
 git clone https://github.com/Chir0rin/cisco-secure-access-rc-deploy.git
 cd cisco-secure-access-rc-deploy
-chmod +x deploy.sh
 ./deploy.sh
 ```
 
-You will be prompted for:
+The script prompts for **connector name** and **provisioning key**, then runs Cisco's install and launch steps. Use `sudo` when asked (or run as root).
 
-- **Connector name** — 1–40 characters: letters, digits, `-`, `_`
-- **Provisioning key** — from the connector group's **View Provisioning Key**
+## Automation (optional)
 
-## Non-interactive (automation)
+To skip prompts (CI, cloud-init, etc.), set:
+
+| Variable | Meaning |
+|---|---|
+| `RC_NAME` | Connector name |
+| `RC_PROVISIONING_KEY` | Provisioning key from the dashboard |
 
 ```bash
-export RC_NAME="rc-01"
-export RC_PROVISIONING_KEY="<provisioning-key-from-dashboard>"
-sudo -E ./deploy.sh
+sudo RC_NAME=rc-01 RC_PROVISIONING_KEY='<key>' ./deploy.sh
 ```
 
-Optional:
+Advanced:
 
 | Variable | Default |
 |---|---|
@@ -132,7 +136,7 @@ After uninstall steps 1–3, clone this repo again and run `./deploy.sh` with a 
 ## References
 
 - [Deploy a Connector in Docker (SecureDocs)](https://securitydocs.cisco.com/docs/csa/olh/120695.dita)
-- [Resource Connector knowledge (internal lab notes)](https://docs.sse.cisco.com/sse-user-guide/docs/deploy-a-resource-connector-in-docker)
+- [Deploy a Resource Connector in Docker (SSE user guide)](https://docs.sse.cisco.com/sse-user-guide/docs/deploy-a-resource-connector-in-docker)
 
 ## License
 

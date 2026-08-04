@@ -12,6 +12,10 @@ main() {
   log "Cisco Secure Access Resource Connector deploy"
   log "Repo: https://github.com/Chir0rin/cisco-secure-access-rc-deploy"
 
+  if [[ -z "${RC_NAME:-}" || -z "${RC_PROVISIONING_KEY:-}" ]]; then
+    print_deploy_inputs
+  fi
+
   preflight_host
 
   local name key
