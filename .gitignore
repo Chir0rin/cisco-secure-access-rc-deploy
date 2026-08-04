@@ -1,0 +1,4 @@
+setup_connector.sh
+*.log
+.env
+.env.*
