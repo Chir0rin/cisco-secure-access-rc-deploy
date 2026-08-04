@@ -41,7 +41,7 @@ You will be prompted for:
 ## Non-interactive (automation)
 
 ```bash
-export RC_NAME="dmzaas-rc-01"
+export RC_NAME="rc-01"
 export RC_PROVISIONING_KEY="<provisioning-key-from-dashboard>"
 sudo -E ./deploy.sh
 ```

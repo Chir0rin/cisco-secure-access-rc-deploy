@@ -61,7 +61,7 @@ prompt_connector_name() {
   fi
   local name
   while true; do
-    read -r -p "Connector name (1-40 chars, e.g. dmzaas-rc-01): " name
+    read -r -p "Connector name (1-40 chars, e.g. rc-01): " name
     if [[ "${name}" =~ ^[A-Za-z0-9_-]{1,40}$ ]]; then
       printf '%s' "${name}"
       return
@@ -164,7 +164,6 @@ Next steps in Cisco Secure Access:
 
 Verify on the host:
   sudo docker ps
-  sudo /opt/connector/install/connector.sh status
 
 Docs: https://docs.sse.cisco.com/sse-user-guide/docs/deploy-a-resource-connector-in-docker
 
