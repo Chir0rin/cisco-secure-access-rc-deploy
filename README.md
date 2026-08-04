@@ -2,22 +2,24 @@
 
 Deploy a **Cisco Secure Access Resource Connector** on **Ubuntu 22.04 LTS** (Docker host).
 
-Clone this repo on the RC VM and run `./deploy.sh`. The script asks for everything it needs on the host — no environment variables required for a normal install.
+## Preparation
 
-## What you need
+### Secure Access (before SSH to the RC VM)
 
-| # | Item | Where |
-|---|---|---|
-| 1 | **Connector name** | You choose (1–40 chars: letters, digits, `-`, `_`) — e.g. `rc-01` |
-| 2 | **Provisioning key** | Secure Access → connector group → **View Provisioning Key** |
+1. Create a **Resource Connector Group** (name and region).
+2. Copy the **Provisioning Key** (connector group → **View Provisioning Key**).
+3. The key binds the connector to that group — you do **not** enter the group name on the host.
 
-Prepare the key in the dashboard **before** running the script. The key already ties the connector to that **Resource Connector Group** — you do not enter the group name on the host.
+You will need at deploy time:
 
-After deployment: **Confirm** the connector in the dashboard, then **Enable** it.
+| Input | Source |
+|---|---|
+| **Connector name** | Your choice (1–40 chars: letters, digits, `-`, `_`) — e.g. `rc-01` |
+| **Provisioning key** | Step 2 above |
 
-Official guide: [Deploy a Resource Connector in Docker](https://docs.sse.cisco.com/sse-user-guide/docs/deploy-a-resource-connector-in-docker)
+After `./deploy.sh` finishes: **Confirm** the connector in the dashboard, then **Enable** it.
 
-## Requirements
+### Host requirements
 
 | Item | Detail |
 |---|---|
@@ -27,7 +29,7 @@ Official guide: [Deploy a Resource Connector in Docker](https://docs.sse.cisco.c
 | Docker | **Do not** pre-install Docker (especially not Snap). Cisco's script installs Docker from apt. |
 | Egress | Outbound HTTPS to Secure Access, Sigstore, GitHub (during setup). See [Allow Resource Connector traffic](https://docs.sse.cisco.com/sse-user-guide/docs/allow-resource-connector-traffic-to-secure-access). |
 
-## Quick start
+## Deploy
 
 ```bash
 git clone https://github.com/Chir0rin/cisco-secure-access-rc-deploy.git
@@ -35,109 +37,80 @@ cd cisco-secure-access-rc-deploy
 ./deploy.sh
 ```
 
-The script prompts for **connector name** and **provisioning key**, then runs Cisco's install and launch steps. Use `sudo` when asked (or run as root).
+The script prompts for **connector name** and **provisioning key**, then installs and launches the connector. Approve `sudo` when prompted.
 
-## Automation (optional)
-
-To skip prompts (CI, cloud-init, etc.), set:
-
-| Variable | Meaning |
-|---|---|
-| `RC_NAME` | Connector name |
-| `RC_PROVISIONING_KEY` | Provisioning key from the dashboard |
+**Automation (optional)** — skip prompts for CI or cloud-init:
 
 ```bash
 sudo RC_NAME=rc-01 RC_PROVISIONING_KEY='<key>' ./deploy.sh
 ```
 
-Advanced:
-
-| Variable | Default |
+| Variable | Meaning |
 |---|---|
-| `RC_SETUP_URL` | `https://us.repo.acgw.sse.cisco.com/scripts/latest/setup_connector.sh` |
-
-## What the script does
-
-1. Preflight (Ubuntu version, sudo, pending `dpkg` config, Snap Docker warning)
-2. Download Cisco `setup_connector.sh` (unless `/opt/connector/install/connector.sh` already exists)
-3. Run `sudo ./setup_connector.sh`
-4. Run `sudo /opt/connector/install/connector.sh launch --name … --key …`
-5. Print dashboard follow-up (Confirm / Enable)
+| `RC_NAME` | Connector name |
+| `RC_PROVISIONING_KEY` | Provisioning key from the dashboard |
+| `RC_SETUP_URL` | Default: `https://us.repo.acgw.sse.cisco.com/scripts/latest/setup_connector.sh` |
 
 ## Uninstall
 
-Remove the connector from **Secure Access first**, then tear down the Docker host. Reversing the order can leave orphaned dashboard entries or a host that still runs containers.
+Remove the connector from **Secure Access first**, then clean up the host.
 
-### 1. Secure Access dashboard
+### Dashboard
 
 1. **Connect → Network Connections → Connector Groups**
-2. Open the connector group → **Connectors** tab
-3. **Disable** the connector (stops forwarding; optional but recommended before delete)
-4. **Revoke** or **Delete** the connector in the dashboard
+2. Open the group → **Connectors** tab
+3. **Disable** (optional, recommended before delete)
+4. **Revoke** or **Delete** the connector
 
-Docs: [Disable, Revoke, or Delete a Connector](https://securitydocs.cisco.com/docs/csa/olh/120705.dita)
-
-### 2. On the Ubuntu host
-
-Stop the container and remove local connector state (replace `<connector_name>` if your install used a specific name):
+### Host
 
 ```bash
 sudo /opt/connector/install/connector.sh stop --destroy
+sudo docker ps    # should show no RC container
 ```
 
-Verify nothing is running:
-
-```bash
-sudo docker ps
-```
-
-### 3. Full local cleanup (reinstall or decommission)
-
-Remove Cisco install files under `/opt/connector`:
+Full cleanup (reinstall or decommission):
 
 ```bash
 sudo rm -rf /opt/connector
 ```
 
-Optional — remove leftover Docker images (only if you are not running other containers on this host):
+Optional: remove Docker images if this host runs no other containers; remove the git clone.
 
-```bash
-sudo docker image ls
-sudo docker image rm ciscosecure/resource-connector:<tag>   # if listed
-```
+To redeploy: repeat **Deploy** with a new or regenerated provisioning key.
 
-Optional — remove this repo clone:
+## What this does
 
-```bash
-cd ..
-rm -rf cisco-secure-access-rc-deploy
-```
+This repo is a thin wrapper around Cisco's official Docker install flow. It does **not** replace dashboard steps (Confirm / Enable) or ZTA policy configuration.
 
-### 4. Redeploy on the same VM
-
-After uninstall steps 1–3, clone this repo again and run `./deploy.sh` with a **new or regenerated provisioning key** from the target connector group.
-
-### Uninstall references
-
-- [Stop the Container / Delete the Container (Docker)](https://securitydocs.cisco.com/docs/csa/olh/120727.dita)
-- [Stop a Connector](https://securitydocs.cisco.com/docs/csa/olh/120792.dita)
-- [Disable, Revoke, or Delete Resource Connectors and Groups](https://securitydocs.cisco.com/docs/csa/olh/120706.dita)
-- [Cisco TAC: stop --destroy and remove `/opt/connector`](https://www.cisco.com/c/en/us/support/docs/security/security-connector/225492-troubleshoot-secure-access-resource.html)
-
-## Troubleshooting
-
-| Symptom | Check |
+| Step | Action |
 |---|---|
-| Docker install fails | Run `sudo dpkg --configure -a`, remove Snap Docker, retry |
-| GPG / cosign errors during setup | Host clock (NTP), egress to GitHub + `tuf-repo-cdn.sigstore.dev` |
-| Connector shows up but no traffic | Dashboard **Enable**; ZTA profile / access rules (outside this repo) |
-| Wrong group | Regenerate key from the intended RCG and redeploy |
+| 1 | Preflight (Ubuntu version, sudo, `dpkg` state, Snap Docker warning) |
+| 2 | Download Cisco `setup_connector.sh` (skipped if `/opt/connector/install/connector.sh` exists) |
+| 3 | Run `setup_connector.sh` (Docker via apt + `/opt/connector`) |
+| 4 | Run `connector.sh launch --name … --key …` |
+| 5 | Print post-deploy dashboard reminders |
 
 ## References
 
-- [Deploy a Connector in Docker (SecureDocs)](https://securitydocs.cisco.com/docs/csa/olh/120695.dita)
-- [Deploy a Resource Connector in Docker (SSE user guide)](https://docs.sse.cisco.com/sse-user-guide/docs/deploy-a-resource-connector-in-docker)
+### Cisco documentation
 
-## License
+- [Deploy a Resource Connector in Docker (SSE user guide)](https://docs.sse.cisco.com/sse-user-guide/docs/deploy-a-resource-connector-in-docker)
+- [Deploy a Connector in Docker (SecureDocs)](https://securitydocs.cisco.com/docs/csa/olh/120695.dita)
+- [Disable, Revoke, or Delete a Connector](https://securitydocs.cisco.com/docs/csa/olh/120705.dita)
+- [Stop the Container / Delete the Container](https://securitydocs.cisco.com/docs/csa/olh/120727.dita)
+- [Stop a Connector](https://securitydocs.cisco.com/docs/csa/olh/120792.dita)
+- [Cisco TAC: stop --destroy and remove `/opt/connector`](https://www.cisco.com/c/en/us/support/docs/security/security-connector/225492-troubleshoot-secure-access-resource.html)
+
+### Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| Docker install fails | `sudo dpkg --configure -a`; remove Snap Docker; retry |
+| GPG / cosign errors during setup | NTP; egress to GitHub and `tuf-repo-cdn.sigstore.dev` |
+| Connector in dashboard but no traffic | **Enable** in dashboard; ZTA profile and access rules |
+| Wrong connector group | Regenerate key from the intended group; redeploy |
+
+### License
 
 MIT — see [LICENSE](LICENSE). Cisco Secure Access software and images are subject to Cisco terms; this repo only wraps Cisco-published install scripts.
