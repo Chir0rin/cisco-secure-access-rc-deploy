@@ -76,8 +76,9 @@ This repo is a thin wrapper around Cisco's official Docker install flow. It does
 | 1 | Preflight (Ubuntu version, sudo, `dpkg` state, Snap Docker warning) |
 | 2 | Download Cisco `setup_connector.sh` (skipped if `/opt/connector/install/connector.sh` exists) |
 | 3 | Run `setup_connector.sh` (Docker via apt + `/opt/connector`) |
-| 4 | Run `connector.sh launch --name … --key …` |
-| 5 | Print post-deploy dashboard reminders |
+| 4 | Confirm connector name and masked provisioning key before launch |
+| 5 | Run `connector.sh launch --name … --key …` |
+| 6 | Print post-deploy dashboard reminders |
 
 ## References
 

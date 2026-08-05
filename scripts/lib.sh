@@ -43,14 +43,54 @@ validate_connector_name() {
   fi
 }
 
+trim_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "${value}"
+}
+
 validate_provisioning_key() {
-  local key="$1"
+  local key
+  key="$(trim_whitespace "$1")"
   if [[ -z "${key}" ]]; then
     die "Provisioning key is empty."
   fi
   if [[ "${#key}" -lt 20 ]]; then
     die "Provisioning key looks too short. Copy it from View Provisioning Key in the dashboard."
   fi
+  printf '%s' "${key}"
+}
+
+mask_provisioning_key() {
+  local key="$1"
+  local len=${#key}
+  if (( len <= 8 )); then
+    printf '**** (len=%d)' "${len}"
+    return
+  fi
+  printf '%s…%s (len=%d)' "${key:0:4}" "${key: -4}" "${len}"
+}
+
+confirm_launch_inputs() {
+  local name="$1"
+  local key="$2"
+  local masked
+  masked="$(mask_provisioning_key "${key}")"
+
+  cat <<EOF
+
+Review before launch:
+  Connector name   : ${name}
+  Provisioning key : ${masked}
+
+EOF
+  local answer
+  read -r -p "Proceed with launch? [y/N]: " answer
+  case "${answer}" in
+    [yY] | [yY][eE][sS]) return 0 ;;
+    *) die "Aborted." ;;
+  esac
 }
 
 print_deploy_inputs() {
@@ -84,14 +124,12 @@ prompt_connector_name() {
 prompt_provisioning_key() {
   if [[ -n "${RC_PROVISIONING_KEY:-}" ]]; then
     validate_provisioning_key "${RC_PROVISIONING_KEY}"
-    printf '%s' "${RC_PROVISIONING_KEY}"
     return
   fi
   local key
   read -r -s -p "Provisioning key (from connector group → View Provisioning Key): " key
   echo
   validate_provisioning_key "${key}"
-  printf '%s' "${key}"
 }
 
 preflight_host() {

@@ -21,6 +21,7 @@ main() {
   local name key
   name="$(prompt_connector_name)"
   key="$(prompt_provisioning_key)"
+  confirm_launch_inputs "${name}" "${key}"
 
   ensure_connector_installed
   launch_connector "${name}" "${key}"
