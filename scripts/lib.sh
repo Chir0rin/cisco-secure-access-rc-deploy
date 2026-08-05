@@ -191,7 +191,7 @@ download_setup_script() {
 ensure_connector_installed() {
   if [[ -x "${RC_CONNECTOR_SH}" ]]; then
     log "Connector install already present at ${RC_CONNECTOR_SH}; skipping setup_connector.sh"
-    return
+    return 0
   fi
 
   local workdir
@@ -203,6 +203,9 @@ ensure_connector_installed() {
 
   log "Running Cisco setup_connector.sh (installs Docker + /opt/connector)..."
   run_as_root bash "${setup}"
+
+  trap - RETURN
+  rm -rf "${workdir}"
 
   [[ -x "${RC_CONNECTOR_SH}" ]] || die "setup_connector.sh finished but ${RC_CONNECTOR_SH} is missing."
 }
@@ -221,11 +224,17 @@ Deployment script finished.
 
 Next steps in Cisco Secure Access:
   1. Connect → Network Connections → Connector Groups
-  2. Confirm the new connector
-  3. Enable the connector
+  2. Open the connector group that matches your provisioning key
+  3. Connectors tab → Confirm the new connector
+  4. Enable the connector
+
+Enrollment can take 30–90 seconds after connector_svc starts.
+If Confirm stays empty, check host logs before retrying launch.
 
 Verify on the host:
   sudo docker ps
+  sudo systemctl status connector_svc --no-pager
+  sudo tail -50 /opt/connector/data/logs/*.log 2>/dev/null
 
 Docs: https://docs.sse.cisco.com/sse-user-guide/docs/deploy-a-resource-connector-in-docker
 
