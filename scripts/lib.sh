@@ -65,25 +65,34 @@ validate_provisioning_key() {
 mask_provisioning_key() {
   local key="$1"
   local len=${#key}
-  if (( len <= 8 )); then
-    printf '**** (len=%d)' "${len}"
+  local edge=6
+
+  if (( len == 0 )); then
+    printf '(empty)'
     return
   fi
-  printf '%s…%s (len=%d)' "${key:0:4}" "${key: -4}" "${len}"
+  if (( len <= edge * 2 )); then
+    printf 'start=%s end=%s (len=%d)' "${key:0:edge}" "${key: -edge}" "${len}"
+    return
+  fi
+  printf 'start=%s … end=%s (len=%d)' "${key:0:edge}" "${key: -edge}" "${len}"
+}
+
+print_key_preview() {
+  log "Provisioning key captured: $(mask_provisioning_key "$1")"
 }
 
 confirm_launch_inputs() {
   local name="$1"
   local key="$2"
-  local masked
-  masked="$(mask_provisioning_key "${key}")"
 
   cat <<EOF
 
 Review before launch:
   Connector name   : ${name}
-  Provisioning key : ${masked}
+  Provisioning key : $(mask_provisioning_key "${key}")
 
+  Compare start/end with the dashboard key before continuing.
 EOF
   local answer
   read -r -p "Proceed with launch? [y/N]: " answer
@@ -122,14 +131,18 @@ prompt_connector_name() {
 }
 
 prompt_provisioning_key() {
+  local key
   if [[ -n "${RC_PROVISIONING_KEY:-}" ]]; then
-    validate_provisioning_key "${RC_PROVISIONING_KEY}"
+    key="$(validate_provisioning_key "${RC_PROVISIONING_KEY}")"
+    print_key_preview "${key}"
+    printf '%s' "${key}"
     return
   fi
-  local key
   read -r -s -p "Provisioning key (from connector group → View Provisioning Key): " key
   echo
-  validate_provisioning_key "${key}"
+  key="$(validate_provisioning_key "${key}")"
+  print_key_preview "${key}"
+  printf '%s' "${key}"
 }
 
 preflight_host() {
