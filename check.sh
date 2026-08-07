@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# CS lab: ./check.sh — A/B preflight only (no install). Same as deploy.sh start.
+# CS lab: proxy probe + NTP + Cisco repo reachability (no install).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 source "${ROOT}/scripts/lib.sh"
 load_lab_proxy
 load_rc_env "${ROOT}/rc.env"
-apply_cs_lab_proxy
-fix_lab_proxy_config
-ensure_cs_lab_ntp
-preflight_sudo_curl_cisco_repo
-log "PASS: Cisco repo reachable"
+cs_lab_prepare_host
+log "PASS: CS lab host ready (NTP + proxy + Cisco repo)"

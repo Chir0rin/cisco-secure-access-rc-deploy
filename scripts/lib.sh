@@ -8,6 +8,11 @@ RC_SETUP_URL_DEFAULT="https://us.repo.acgw.sse.cisco.com/scripts/latest/setup_co
 # CS lab SharePoint: tyoidc5-dmz-wsa-* faster than proxy.esl for 192.168.2.x egress
 CS_LAB_PROXY_DEFAULT="http://tyoidc5-dmz-wsa-1.cisco.com:80"
 CS_LAB_NO_PROXY="localhost,127.0.0.1,192.168.2.0/24,10.70.91.0/24,.esl.cisco.com"
+CS_LAB_PROXY_CANDIDATES=(
+  "http://tyoidc5-dmz-wsa-1.cisco.com:80"
+  "http://tyoidc5-dmz-wsa-2.cisco.com:80"
+  "http://proxy.esl.cisco.com:80"
+)
 
 # stderr, so log lines never leak into command substitutions (e.g. captured keys)
 log() {
@@ -52,77 +57,79 @@ load_lab_proxy() {
   fi
 }
 
-# Root cause (CS lab): no_proxy lists .cisco.com → curl bypasses proxy for
-# us.repo.acgw.sse.cisco.com. setup_connector.sh uses bare "sudo curl" (no -x),
-# so pam-loaded /etc/environment + no_proxy wins; direct egress fails → HTTP 000.
-apply_cs_lab_proxy() {
-  local proxy="${RC_HTTP_PROXY:-${CS_LAB_PROXY_DEFAULT}}"
-  local proxy_file="/etc/profile.d/proxy.sh"
-  local rewrite=0
+# Same curl path as patched setup_connector.sh (sudo curl -x proxy).
+probe_cisco_repo_via_proxy() {
+  local proxy="$1"
+  local url="${RC_SETUP_URL:-${RC_SETUP_URL_DEFAULT}}"
+  run_as_root env -u no_proxy -u NO_PROXY \
+    http_proxy="${proxy}" https_proxy="${proxy}" \
+    curl -x "${proxy}" -fsSL -o /dev/null -w '%{http_code}' \
+    --connect-timeout 10 --max-time 45 "${url}" 2>/dev/null || echo 000
+}
 
-  if [[ ! -f "${proxy_file}" ]]; then
-    rewrite=1
-  elif ! grep -qF "${proxy}" "${proxy_file}"; then
-    rewrite=1
-  elif grep -q 'proxy\.esl\.cisco\.com' "${proxy_file}"; then
-    rewrite=1
-  fi
-
-  if [[ "${rewrite}" -eq 0 ]]; then
-    export http_proxy="${proxy}"
-    export https_proxy="${proxy}"
-    export no_proxy="${CS_LAB_NO_PROXY}"
-    return 0
-  fi
-
-  log "Setting CS lab proxy to ${proxy} (Tokyo WSA; override with RC_HTTP_PROXY in rc.env)"
-  run_as_root tee "${proxy_file}" >/dev/null <<EOF
+write_cs_lab_proxy_files() {
+  local proxy="$1"
+  run_as_root tee /etc/profile.d/proxy.sh >/dev/null <<EOF
 export http_proxy="${proxy}"
 export https_proxy="${proxy}"
 export no_proxy="${CS_LAB_NO_PROXY}"
 EOF
-  export http_proxy="${proxy}"
-  export https_proxy="${proxy}"
-  export no_proxy="${CS_LAB_NO_PROXY}"
-
   run_as_root tee /etc/apt/apt.conf.d/95proxies >/dev/null <<EOF
 Acquire::http::Proxy "${proxy}";
 Acquire::https::Proxy "${proxy}";
 EOF
-
+  local curlrc_body
+  curlrc_body="proxy = \"${proxy}\"
+noproxy = \"${CS_LAB_NO_PROXY}\""
+  run_as_root tee /etc/curlrc >/dev/null <<<"${curlrc_body}"
+  run_as_root tee /root/.curlrc >/dev/null <<<"${curlrc_body}"
   if [[ -f /etc/environment ]] && grep -qE '^https?_proxy=' /etc/environment; then
     run_as_root sed -i "s|^http_proxy=.*|http_proxy=\"${proxy}\"|" /etc/environment
     run_as_root sed -i "s|^https_proxy=.*|https_proxy=\"${proxy}\"|" /etc/environment
     run_as_root sed -i -E 's/,\?\.cisco\.com//g' /etc/environment
+    run_as_root sed -i -E 's|^no_proxy=.*|no_proxy=\"${CS_LAB_NO_PROXY}\"|' /etc/environment
   fi
+  export http_proxy="${proxy}" https_proxy="${proxy}" no_proxy="${CS_LAB_NO_PROXY}"
+  export RC_HTTP_PROXY="${proxy}"
 }
 
-fix_lab_proxy_config() {
-  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
-  [[ -n "${proxy}" ]] || return 0
+# Probe SharePoint-listed proxies; write config only for the one that works.
+select_and_apply_cs_lab_proxy() {
+  local -a ordered=() seen="" proxy status
+  local url="${RC_SETUP_URL:-${RC_SETUP_URL_DEFAULT}}"
 
-  local proxy_file="/etc/profile.d/proxy.sh"
-  if [[ -f "${proxy_file}" ]] && grep -qE '\.cisco\.com' "${proxy_file}"; then
-    log "Fixing ${proxy_file}: removing .cisco.com from no_proxy (Cisco repo needs proxy on CS lab)"
-    run_as_root sed -i -E 's/,\?\.cisco\.com//g' "${proxy_file}"
-    # shellcheck source=/dev/null
-    source "${proxy_file}"
+  if [[ -n "${RC_HTTP_PROXY:-}" ]]; then
+    ordered+=("${RC_HTTP_PROXY}")
+    seen=" ${RC_HTTP_PROXY} "
   fi
+  local candidate
+  for candidate in "${CS_LAB_PROXY_CANDIDATES[@]}"; do
+    [[ "${seen}" == *" ${candidate} "* ]] && continue
+    ordered+=("${candidate}")
+    seen+=" ${candidate} "
+  done
 
-  if [[ -f /etc/environment ]] && grep -qE 'no_proxy=.*\.cisco\.com' /etc/environment; then
-    log "Fixing /etc/environment: removing .cisco.com from no_proxy"
-    run_as_root sed -i -E 's/,\?\.cisco\.com//g' /etc/environment
-  fi
-
-  log "Writing curl proxy config (sudo curl uses root's home, not shell http_proxy)"
-  local curlrc_body
-  curlrc_body="proxy = \"${proxy}\"
-noproxy = \"localhost,127.0.0.1,192.168.2.0/24,.esl.cisco.com\""
-  run_as_root tee /etc/curlrc >/dev/null <<<"${curlrc_body}"
-  run_as_root tee /root/.curlrc >/dev/null <<<"${curlrc_body}"
+  log "Selecting CS lab proxy (GET ${url})"
+  for proxy in "${ordered[@]}"; do
+    log "  probe ${proxy}"
+    status="$(probe_cisco_repo_via_proxy "${proxy}")"
+    log "  → HTTP ${status}"
+    if [[ "${status}" == "200" ]]; then
+      write_cs_lab_proxy_files "${proxy}"
+      log "Using proxy ${proxy}"
+      return 0
+    fi
+  done
+  die "No proxy reached Cisco repo. Tried:${seen}
+Set RC_HTTP_PROXY in rc.env to force one, or retry when lab network is stable."
 }
 
-# CS lab: default NTP pool unreachable; internal 10.64.58.50 required for sync.
+# CS lab host prep: NTP (GPG) then proxy (egress). Single entry for deploy + check.
+cs_lab_prepare_host() {
+  ensure_cs_lab_ntp
+  select_and_apply_cs_lab_proxy
+}
+
 ensure_cs_lab_ntp() {
   local conf_dir="/etc/systemd/timesyncd.conf.d"
   local conf_file="${conf_dir}/cisco.conf"
@@ -145,47 +152,8 @@ EOF
     synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo unknown)"
     log "Clock: $(date -u +'%Y-%m-%d %H:%M:%S UTC') · NTP synchronized: ${synced}"
     if [[ "${synced}" != "yes" ]]; then
-      log "WARNING: NTP not synced yet — wait 30s or: timedatectl timesync-status"
+      die "NTP not synchronized — cosign GPG verify will fail. Wait 30s and retry, or: timedatectl timesync-status"
     fi
-  fi
-}
-
-# Gate: proxy-forced curl (same as patched setup_connector.sh). Must pass before install.
-preflight_cisco_repo_gate() {
-  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
-  [[ -n "${proxy}" ]] || return 0
-
-  local url="${RC_SETUP_URL:-${RC_SETUP_URL_DEFAULT}}"
-  log "Preflight: Cisco repo via proxy → ${url}"
-  local status
-  status="$(
-    run_as_root env -u no_proxy -u NO_PROXY \
-      http_proxy="${proxy}" https_proxy="${proxy}" \
-      curl -x "${proxy}" -fsSL -o /dev/null -w '%{http_code}' \
-      --connect-timeout 15 --max-time 60 "${url}" || true
-  )"
-  if [[ "${status}" != "200" ]]; then
-    die "Preflight failed (HTTP ${status}). Proxy path to Cisco repo is broken.
-
-  grep -E 'proxy|no_proxy' /etc/profile.d/proxy.sh /etc/environment /etc/curlrc /root/.curlrc 2>/dev/null"
-  fi
-  log "Preflight OK (HTTP ${status})"
-}
-
-# Optional A/B diagnose (check.sh). A can hang on CS lab — short timeout, non-blocking.
-preflight_sudo_curl_cisco_repo() {
-  preflight_cisco_repo_gate
-
-  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
-  [[ -n "${proxy}" ]] || return 0
-
-  local url="https://us.repo.acgw.sse.cisco.com/scripts/latest/cosign-linux-amd64"
-  log "Diagnose A: bare sudo curl (10s cap, informational only)"
-  local status_a
-  status_a="$(run_as_root curl -s -L -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "${url}" 2>/dev/null || echo 000)"
-  log "  → HTTP ${status_a} (000/timeout = no proxy on bare sudo curl)"
-  if [[ "${status_a}" != "200" ]]; then
-    log "A≠gate: setup_connector.sh will be patched (sudo curl → curl -x) before install."
   fi
 }
 
@@ -443,6 +411,12 @@ ensure_connector_installed() {
   if [[ -x "${RC_CONNECTOR_SH}" ]]; then
     log "Connector install already present at ${RC_CONNECTOR_SH}; skipping setup_connector.sh"
     return 0
+  fi
+
+  if [[ -d /opt/connector/install ]]; then
+    log "Cleaning partial install artifacts (failed cosign verify, etc.)"
+    run_as_root rm -f /opt/connector/install/cosign-linux-amd64* \
+      /opt/connector/install/*.sig /opt/connector/install/*.asc 2>/dev/null || true
   fi
 
   local workdir
