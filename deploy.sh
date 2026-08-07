@@ -16,6 +16,7 @@ main() {
   load_rc_env "${ROOT}/rc.env"
   apply_cs_lab_proxy
   fix_lab_proxy_config
+  ensure_cs_lab_ntp
   preflight_cisco_repo_gate
 
   if [[ -z "${RC_NAME:-}" || -z "${RC_PROVISIONING_KEY:-}" ]]; then

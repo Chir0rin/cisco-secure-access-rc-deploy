@@ -122,6 +122,34 @@ noproxy = \"localhost,127.0.0.1,192.168.2.0/24,.esl.cisco.com\""
   run_as_root tee /root/.curlrc >/dev/null <<<"${curlrc_body}"
 }
 
+# CS lab: default NTP pool unreachable; internal 10.64.58.50 required for sync.
+ensure_cs_lab_ntp() {
+  local conf_dir="/etc/systemd/timesyncd.conf.d"
+  local conf_file="${conf_dir}/cisco.conf"
+
+  if [[ ! -f "${conf_file}" ]] || ! grep -q '10.64.58.50' "${conf_file}"; then
+    log "Configuring CS lab NTP (10.64.58.50) — needed for cosign GPG verify"
+    run_as_root mkdir -p "${conf_dir}"
+    run_as_root tee "${conf_file}" >/dev/null <<'EOF'
+[Time]
+NTP=10.64.58.50 ntp.esl.cisco.com
+FallbackNTP=pool.ntp.org
+EOF
+    run_as_root timedatectl set-ntp true
+    run_as_root systemctl restart systemd-timesyncd
+    sleep 3
+  fi
+
+  if command -v timedatectl >/dev/null 2>&1; then
+    local synced
+    synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo unknown)"
+    log "Clock: $(date -u +'%Y-%m-%d %H:%M:%S UTC') · NTP synchronized: ${synced}"
+    if [[ "${synced}" != "yes" ]]; then
+      log "WARNING: NTP not synced yet — wait 30s or: timedatectl timesync-status"
+    fi
+  fi
+}
+
 # Gate: proxy-forced curl (same as patched setup_connector.sh). Must pass before install.
 preflight_cisco_repo_gate() {
   local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"

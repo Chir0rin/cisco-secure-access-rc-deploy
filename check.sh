@@ -8,5 +8,6 @@ load_lab_proxy
 load_rc_env "${ROOT}/rc.env"
 apply_cs_lab_proxy
 fix_lab_proxy_config
+ensure_cs_lab_ntp
 preflight_sudo_curl_cisco_repo
 log "PASS: Cisco repo reachable"
