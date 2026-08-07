@@ -31,9 +31,88 @@ require_root_or_sudo() {
 run_as_root() {
   require_root_or_sudo
   if [[ -n "${SUDO}" ]]; then
-    "${SUDO}" "$@"
+    # Preserve http_proxy/https_proxy for setup_connector.sh (apt, curl inside).
+    "${SUDO}" -E "$@"
   else
     "$@"
+  fi
+}
+
+# CS lab / corporate: load /etc/profile.d/proxy.sh if env not already set.
+load_lab_proxy() {
+  local proxy_file="/etc/profile.d/proxy.sh"
+  [[ -f "${proxy_file}" ]] || return 0
+  if [[ -z "${http_proxy:-}" && -z "${HTTP_PROXY:-}" ]]; then
+    # shellcheck source=/dev/null
+    source "${proxy_file}"
+    log "Loaded proxy from ${proxy_file}"
+  fi
+}
+
+# Root cause (CS lab): no_proxy lists .cisco.com → curl bypasses proxy for
+# us.repo.acgw.sse.cisco.com. setup_connector.sh uses bare "sudo curl" (no -x),
+# so pam-loaded /etc/environment + no_proxy wins; direct egress fails → HTTP 000.
+fix_lab_proxy_config() {
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  [[ -n "${proxy}" ]] || return 0
+
+  local proxy_file="/etc/profile.d/proxy.sh"
+  if [[ -f "${proxy_file}" ]] && grep -qE '\.cisco\.com' "${proxy_file}"; then
+    log "Fixing ${proxy_file}: removing .cisco.com from no_proxy (Cisco repo needs proxy on CS lab)"
+    run_as_root sed -i -E 's/,\?\.cisco\.com//g' "${proxy_file}"
+    # shellcheck source=/dev/null
+    source "${proxy_file}"
+  fi
+
+  if [[ -f /etc/environment ]] && grep -qE 'no_proxy=.*\.cisco\.com' /etc/environment; then
+    log "Fixing /etc/environment: removing .cisco.com from no_proxy"
+    run_as_root sed -i -E 's/,\?\.cisco\.com//g' /etc/environment
+  fi
+
+  log "Writing curl proxy config (sudo curl uses root's home, not shell http_proxy)"
+  local curlrc_body
+  curlrc_body="proxy = \"${proxy}\"
+noproxy = \"localhost,127.0.0.1,192.168.2.0/24,.esl.cisco.com\""
+  run_as_root tee /etc/curlrc >/dev/null <<<"${curlrc_body}"
+  run_as_root tee /root/.curlrc >/dev/null <<<"${curlrc_body}"
+}
+
+# Gate: proxy-forced curl (same as patched setup_connector.sh). Must pass before install.
+preflight_cisco_repo_gate() {
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  [[ -n "${proxy}" ]] || return 0
+
+  local url="https://us.repo.acgw.sse.cisco.com/scripts/latest/cosign-linux-amd64"
+  log "Preflight: Cisco repo via proxy → ${url}"
+  local status
+  status="$(
+    run_as_root env -u no_proxy -u NO_PROXY \
+      http_proxy="${proxy}" https_proxy="${proxy}" \
+      curl -x "${proxy}" -s -L -o /dev/null -w '%{http_code}' \
+      --connect-timeout 15 --max-time 60 "${url}" || true
+  )"
+  if [[ "${status}" != "200" ]]; then
+    die "Preflight failed (HTTP ${status}). Proxy path to Cisco repo is broken.
+
+  grep -E 'proxy|no_proxy' /etc/profile.d/proxy.sh /etc/environment /etc/curlrc /root/.curlrc 2>/dev/null"
+  fi
+  log "Preflight OK (HTTP ${status})"
+}
+
+# Optional A/B diagnose (check.sh). A can hang on CS lab — short timeout, non-blocking.
+preflight_sudo_curl_cisco_repo() {
+  preflight_cisco_repo_gate
+
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  [[ -n "${proxy}" ]] || return 0
+
+  local url="https://us.repo.acgw.sse.cisco.com/scripts/latest/cosign-linux-amd64"
+  log "Diagnose A: bare sudo curl (10s cap, informational only)"
+  local status_a
+  status_a="$(run_as_root curl -s -L -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "${url}" 2>/dev/null || echo 000)"
+  log "  → HTTP ${status_a} (000/timeout = no proxy on bare sudo curl)"
+  if [[ "${status_a}" != "200" ]]; then
+    log "A≠gate: setup_connector.sh will be patched (sudo curl → curl -x) before install."
   fi
 }
 
@@ -213,9 +292,43 @@ preflight_host() {
 download_setup_script() {
   local dest="$1"
   local url="${RC_SETUP_URL:-${RC_SETUP_URL_DEFAULT}}"
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
   log "Downloading setup_connector.sh from ${url}"
-  curl -fsSL -o "${dest}" "${url}"
+  if [[ -n "${proxy}" ]]; then
+    log "Using proxy ${proxy}"
+    # no_proxy often lists .cisco.com; that bypasses proxy for us.repo.acgw.sse.cisco.com
+    # and times out on CS lab segments. Force proxy for this download only.
+    env -u no_proxy -u NO_PROXY curl -fsSL --connect-timeout 30 --max-time 600 \
+      -x "${proxy}" -o "${dest}" "${url}"
+  else
+    curl -fsSL --connect-timeout 30 --max-time 600 -o "${dest}" "${url}"
+  fi
   chmod +x "${dest}"
+}
+
+# Cisco setup_connector.sh calls bare "sudo curl" — ignores our shell proxy and
+# no_proxy=.cisco.com makes it bypass proxy. Patch the script after download.
+patch_setup_connector_for_proxy() {
+  local setup="$1"
+  local proxy="${2:-}"
+  [[ -n "${proxy}" ]] || return 0
+  [[ -f "${setup}" ]] || return 0
+
+  if grep -q 'RC_DEPLOY_PROXY_PATCHED' "${setup}"; then
+    return 0
+  fi
+
+  log "Patching setup_connector.sh: force proxy on sudo curl (CS lab egress)"
+  local esc="${proxy//\\/\\\\}"
+  esc="${esc//|/\\|}"
+  esc="${esc//&/\\&}"
+
+  sed -i \
+    -e "s|sudo curl|sudo env -u no_proxy -u NO_PROXY http_proxy=${esc} https_proxy=${esc} curl -x ${esc}|g" \
+    -e 's| -s -L | --connect-timeout 30 --max-time 900 -L --progress-bar |g' \
+    "${setup}"
+
+  printf '\n# RC_DEPLOY_PROXY_PATCHED=1\n' >>"${setup}"
 }
 
 ensure_connector_installed() {
@@ -231,9 +344,19 @@ ensure_connector_installed() {
   local setup="${workdir}/setup_connector.sh"
   download_setup_script "${setup}"
 
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  patch_setup_connector_for_proxy "${setup}" "${proxy}"
+
   log "Running Cisco setup_connector.sh (installs Docker + /opt/connector)..."
-  log "Note: cosign binary is ~110MB via proxy — 3-6 min silent download is normal."
-  run_as_root bash "${setup}"
+  log "Note: cosign is ~110MB via proxy — 3-6 min at this line is normal (progress bar on next run)."
+  if [[ -n "${proxy}" ]]; then
+    run_as_root env -u no_proxy -u NO_PROXY \
+      http_proxy="${proxy}" https_proxy="${proxy}" \
+      HTTP_PROXY="${proxy}" HTTPS_PROXY="${proxy}" \
+      bash "${setup}"
+  else
+    run_as_root bash "${setup}"
+  fi
 
   trap - RETURN
   rm -rf "${workdir}"
