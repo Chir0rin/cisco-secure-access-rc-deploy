@@ -12,6 +12,7 @@ main() {
   log "Cisco Secure Access Resource Connector deploy"
   log "Repo: https://github.com/Chir0rin/cisco-secure-access-rc-deploy"
 
+  load_lab_proxy
   load_rc_env "${ROOT}/rc.env"
 
   if [[ -z "${RC_NAME:-}" || -z "${RC_PROVISIONING_KEY:-}" ]]; then

@@ -31,9 +31,21 @@ require_root_or_sudo() {
 run_as_root() {
   require_root_or_sudo
   if [[ -n "${SUDO}" ]]; then
-    "${SUDO}" "$@"
+    # Preserve http_proxy/https_proxy for setup_connector.sh (apt, curl inside).
+    "${SUDO}" -E "$@"
   else
     "$@"
+  fi
+}
+
+# CS lab / corporate: load /etc/profile.d/proxy.sh if env not already set.
+load_lab_proxy() {
+  local proxy_file="/etc/profile.d/proxy.sh"
+  [[ -f "${proxy_file}" ]] || return 0
+  if [[ -z "${http_proxy:-}" && -z "${HTTP_PROXY:-}" ]]; then
+    # shellcheck source=/dev/null
+    source "${proxy_file}"
+    log "Loaded proxy from ${proxy_file}"
   fi
 }
 
@@ -213,8 +225,14 @@ preflight_host() {
 download_setup_script() {
   local dest="$1"
   local url="${RC_SETUP_URL:-${RC_SETUP_URL_DEFAULT}}"
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
   log "Downloading setup_connector.sh from ${url}"
-  curl -fsSL -o "${dest}" "${url}"
+  if [[ -n "${proxy}" ]]; then
+    log "Using proxy ${proxy}"
+    curl -fsSL --connect-timeout 30 --max-time 600 -x "${proxy}" -o "${dest}" "${url}"
+  else
+    curl -fsSL --connect-timeout 30 --max-time 600 -o "${dest}" "${url}"
+  fi
   chmod +x "${dest}"
 }
 
