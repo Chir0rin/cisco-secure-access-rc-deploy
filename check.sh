@@ -21,4 +21,8 @@ load_lab_proxy
 load_rc_env "${ROOT}/rc.env"
 resolve_rc_name_from_hostname
 cs_lab_prepare_host
-log "PASS: CS lab host ready (NTP + proxy + Cisco repo)"
+check_package_manager
+if [[ -d "${ROOT}/.git" ]]; then
+  log "Git: $(git -C "${ROOT}" rev-parse --short HEAD)"
+fi
+log "PASS: CS lab host ready (NTP + proxy + Cisco repo + package manager)"

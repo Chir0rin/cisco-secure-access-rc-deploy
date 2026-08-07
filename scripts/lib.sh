@@ -493,9 +493,52 @@ Fix NTP then retry:
   fi
 }
 
+# apt/dpkg lock and half-configured packages block setup_connector.sh (debconf hang on vCenter).
+check_package_manager() {
+  log "Checking apt/dpkg locks..."
+  local block=0
+  local line
+
+  while read -r line; do
+    [[ -n "${line}" ]] || continue
+    log "WAIT: ${line}"
+    block=1
+  done < <(pgrep -a 'apt-get|apt|dpkg' 2>/dev/null || true)
+
+  if command -v fuser >/dev/null 2>&1; then
+    local lock holders
+    for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
+      [[ -e "${lock}" ]] || continue
+      holders="$(fuser "${lock}" 2>/dev/null || true)"
+      if [[ -n "${holders}" ]]; then
+        log "WAIT: ${lock} held by PID(s): ${holders}"
+        block=1
+      fi
+    done
+  fi
+
+  if command -v dpkg >/dev/null 2>&1; then
+    local broken
+    broken="$(dpkg -l 2>/dev/null | awk '/^..r/{print $2}' | tr '\n' ' ' || true)"
+    if [[ -n "${broken}" ]]; then
+      log "WARN: unconfigured packages: ${broken}"
+      log "  After lock clears: sudo DEBIAN_FRONTEND=noninteractive dpkg --configure -a"
+      if (( block == 0 )); then
+        block=1
+      fi
+    fi
+  fi
+
+  if (( block != 0 )); then
+    die "Package manager not ready — wait for apt/dpkg to finish (or kill stale PID), then ./check.sh"
+  fi
+  log "Package manager: OK"
+}
+
 preflight_host() {
   log "Running preflight checks..."
   preflight_system_clock
+  check_package_manager
 
   if [[ -f /etc/os-release ]]; then
     # shellcheck source=/dev/null
@@ -510,14 +553,6 @@ preflight_host() {
 
   if command -v snap >/dev/null 2>&1 && snap list docker 2>/dev/null | grep -q docker; then
     log "WARNING: Snap Docker detected. Remove it before continuing (Cisco recommends apt-based Docker via setup_connector.sh)."
-  fi
-
-  if command -v dpkg >/dev/null 2>&1; then
-    local broken
-    broken="$(dpkg -l 2>/dev/null | awk '/^..r/{print $2}' | head -5 || true)"
-    if [[ -n "${broken}" ]]; then
-      log "WARNING: dpkg reports packages needing configuration. Run: sudo dpkg --configure -a"
-    fi
   fi
 
   if [[ ! -x "${RC_CONNECTOR_SH}" ]]; then
