@@ -69,45 +69,50 @@ fix_lab_proxy_config() {
     run_as_root sed -i -E 's/,\?\.cisco\.com//g' /etc/environment
   fi
 
-  log "Writing /etc/curlrc (sudo curl does not inherit shell http_proxy)"
-  run_as_root tee /etc/curlrc >/dev/null <<EOF
-proxy = "${proxy}"
-noproxy = "localhost,127.0.0.1,192.168.2.0/24,.esl.cisco.com"
-EOF
+  log "Writing curl proxy config (sudo curl uses root's home, not shell http_proxy)"
+  local curlrc_body
+  curlrc_body="proxy = \"${proxy}\"
+noproxy = \"localhost,127.0.0.1,192.168.2.0/24,.esl.cisco.com\""
+  run_as_root tee /etc/curlrc >/dev/null <<<"${curlrc_body}"
+  run_as_root tee /root/.curlrc >/dev/null <<<"${curlrc_body}"
 }
 
-# Diagnose CS lab proxy bypass: bare sudo curl vs proxy-forced (patched setup_connector.sh).
-preflight_sudo_curl_cisco_repo() {
+# Gate: proxy-forced curl (same as patched setup_connector.sh). Must pass before install.
+preflight_cisco_repo_gate() {
   local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
   [[ -n "${proxy}" ]] || return 0
 
   local url="https://us.repo.acgw.sse.cisco.com/scripts/latest/cosign-linux-amd64"
-
-  log "Preflight A: bare sudo curl (unpatched setup_connector.sh) → ${url}"
-  local status_a
-  status_a="$(run_as_root curl -s -L -o /dev/null -w '%{http_code}' --connect-timeout 30 --max-time 120 "${url}" || true)"
-  log "  → HTTP ${status_a} (000 = no_proxy/.cisco.com bypassed proxy on CS lab)"
-
-  log "Preflight B: proxy-forced sudo curl (patched setup_connector.sh path)"
-  local status_b
-  status_b="$(
+  log "Preflight: Cisco repo via proxy → ${url}"
+  local status
+  status="$(
     run_as_root env -u no_proxy -u NO_PROXY \
       http_proxy="${proxy}" https_proxy="${proxy}" \
       curl -x "${proxy}" -s -L -o /dev/null -w '%{http_code}' \
-      --connect-timeout 30 --max-time 120 "${url}" || true
+      --connect-timeout 15 --max-time 60 "${url}" || true
   )"
+  if [[ "${status}" != "200" ]]; then
+    die "Preflight failed (HTTP ${status}). Proxy path to Cisco repo is broken.
 
-  if [[ "${status_b}" != "200" ]]; then
-    die "Preflight B failed (HTTP ${status_b}). Proxy path broken — fix proxy.esl.cisco.com / DNS first.
-
-  A (bare sudo curl) = ${status_a}
-  B (curl -x proxy)   = ${status_b}
-
-  grep -E 'proxy|no_proxy' /etc/profile.d/proxy.sh /etc/environment /etc/curlrc 2>/dev/null"
+  grep -E 'proxy|no_proxy' /etc/profile.d/proxy.sh /etc/environment /etc/curlrc /root/.curlrc 2>/dev/null"
   fi
-  log "Preflight B OK (HTTP ${status_b})"
+  log "Preflight OK (HTTP ${status})"
+}
+
+# Optional A/B diagnose (check.sh). A can hang on CS lab — short timeout, non-blocking.
+preflight_sudo_curl_cisco_repo() {
+  preflight_cisco_repo_gate
+
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  [[ -n "${proxy}" ]] || return 0
+
+  local url="https://us.repo.acgw.sse.cisco.com/scripts/latest/cosign-linux-amd64"
+  log "Diagnose A: bare sudo curl (10s cap, informational only)"
+  local status_a
+  status_a="$(run_as_root curl -s -L -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "${url}" 2>/dev/null || echo 000)"
+  log "  → HTTP ${status_a} (000/timeout = no proxy on bare sudo curl)"
   if [[ "${status_a}" != "200" ]]; then
-    log "A≠B: setup_connector.sh will be patched (sudo curl → curl -x) before install."
+    log "A≠gate: setup_connector.sh will be patched (sudo curl → curl -x) before install."
   fi
 }
 

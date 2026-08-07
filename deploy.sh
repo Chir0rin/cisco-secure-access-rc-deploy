@@ -15,7 +15,7 @@ main() {
   load_lab_proxy
   load_rc_env "${ROOT}/rc.env"
   fix_lab_proxy_config
-  preflight_sudo_curl_cisco_repo
+  preflight_cisco_repo_gate
 
   if [[ -z "${RC_NAME:-}" || -z "${RC_PROVISIONING_KEY:-}" ]]; then
     print_deploy_inputs
