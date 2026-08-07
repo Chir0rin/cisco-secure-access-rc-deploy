@@ -6,5 +6,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${ROOT}/scripts/lib.sh"
 load_lab_proxy
 load_rc_env "${ROOT}/rc.env"
+resolve_rc_name_from_hostname
 cs_lab_prepare_host
 log "PASS: CS lab host ready (NTP + proxy + Cisco repo)"

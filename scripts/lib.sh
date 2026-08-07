@@ -297,9 +297,25 @@ prompt_provisioning_key() {
   printf '%s' "${key}"
 }
 
-# rc.env is shared across RC VMs and now targets rc02. Refuse to launch on a
-# host that already runs a connector (e.g. the rc01 VM) — a second launch there
-# would enroll a duplicate under the wrong name.
+# CS lab: one git clone on every RC VM — connector name must match hostname.
+resolve_rc_name_from_hostname() {
+  local host
+  host="$(hostname -s)"
+  if [[ -z "${RC_NAME:-}" ]]; then
+    RC_NAME="${host}"
+    export RC_NAME
+    log "RC_NAME from hostname: ${RC_NAME}"
+    return
+  fi
+  if [[ "${RC_NAME}" != "${host}" ]]; then
+    die "RC_NAME (${RC_NAME}) != hostname (${host}).
+
+Do not commit RC_NAME to the shared rc.env — remove it and git pull, or edit rc.env locally on this VM only."
+  fi
+  log "RC_NAME matches hostname: ${RC_NAME}"
+}
+
+# Refuse to launch on a host that already runs a connector (re-deploy needs stop --destroy first).
 preflight_no_existing_connector() {
   if systemctl is-active --quiet connector_svc 2>/dev/null; then
     die "connector_svc is already active — this host already runs a connector.
