@@ -39,6 +39,12 @@ cd cisco-secure-access-rc-deploy
 
 The script prompts for **connector name** and **provisioning key**, then installs and launches the connector. Approve `sudo` when prompted.
 
+### No-paste deploy via `rc.env`
+
+To avoid pasting the key on the VM, edit [`rc.env`](rc.env) in the repo (set `RC_NAME` and `RC_PROVISIONING_KEY`, optionally `RC_YES=1` to skip the confirmation), commit, and push. `deploy.sh` loads it automatically; placeholder values are ignored and fall back to prompts. Environment variables override `rc.env`.
+
+> **Security:** the provisioning key enrolls connectors into your org. Only commit a real key while this repo is **private**, and regenerate the key from the dashboard if the repo is ever shared or made public.
+
 ## Uninstall
 
 Remove the connector from **Secure Access first**, then clean up the host.
