@@ -158,6 +158,40 @@ Set RC_HTTP_PROXY in rc.env to force one, or retry when lab network is stable."
 cs_lab_prepare_host() {
   ensure_cs_lab_ntp
   select_and_apply_cs_lab_proxy
+  ensure_docker_daemon_proxy
+}
+
+# docker pull uses the daemon, not shell http_proxy — required for registry-1.docker.io on CS lab.
+ensure_docker_daemon_proxy() {
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  [[ -n "${proxy}" ]] || return 0
+
+  local dropin="/etc/systemd/system/docker.service.d/http-proxy.conf"
+  if [[ -f "${dropin}" ]] && grep -qF "${proxy}" "${dropin}" 2>/dev/null; then
+    log "Docker daemon proxy OK (${proxy})"
+    return 0
+  fi
+
+  log "Configuring Docker daemon proxy for docker pull → ${proxy}"
+  run_as_root mkdir -p /etc/systemd/system/docker.service.d
+  run_as_root tee "${dropin}" >/dev/null <<EOF
+[Service]
+Environment="HTTP_PROXY=${proxy}"
+Environment="HTTPS_PROXY=${proxy}"
+Environment="NO_PROXY=${CS_LAB_NO_PROXY}"
+EOF
+  run_as_root systemctl daemon-reload
+  run_as_root systemctl restart docker
+  sleep 2
+}
+
+ensure_connector_image() {
+  if run_as_root docker image inspect ciscosecure/resource-connector:latest &>/dev/null; then
+    return 0
+  fi
+  [[ -x "${RC_CONNECTOR_SH}" ]] || return 0
+  log "Pulling ciscosecure/resource-connector:latest (prior docker pull may have failed without daemon proxy)"
+  run_as_root docker pull ciscosecure/resource-connector:latest
 }
 
 ensure_cs_lab_ntp() {
