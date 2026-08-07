@@ -566,6 +566,8 @@ patch_setup_connector_for_proxy() {
   sed -i \
     -e "s|sudo curl|sudo env -u no_proxy -u NO_PROXY http_proxy=${esc} https_proxy=${esc} curl -x ${esc}|g" \
     -e 's| -s -L | --connect-timeout 30 --max-time 900 -L --progress-bar |g' \
+    -e 's|sudo apt-get update -qq|export DEBIAN_FRONTEND=noninteractive\n        sudo apt-get update -qq|g' \
+    -e 's|sudo apt -y install -qq|sudo DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" install|g' \
     "${setup}"
 
   printf '\n# RC_DEPLOY_PROXY_PATCHED=1\n' >>"${setup}"
