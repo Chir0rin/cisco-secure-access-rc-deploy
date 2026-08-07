@@ -128,13 +128,13 @@ preflight_cisco_repo_gate() {
   [[ -n "${proxy}" ]] || return 0
 
   local url="https://us.repo.acgw.sse.cisco.com/scripts/latest/cosign-linux-amd64"
-  log "Preflight: Cisco repo via proxy → ${url}"
+  log "Preflight: Cisco repo via proxy (HEAD) → ${url}"
   local status
   status="$(
     run_as_root env -u no_proxy -u NO_PROXY \
       http_proxy="${proxy}" https_proxy="${proxy}" \
-      curl -x "${proxy}" -s -L -o /dev/null -w '%{http_code}' \
-      --connect-timeout 15 --max-time 60 "${url}" || true
+      curl -x "${proxy}" -sI -o /dev/null -w '%{http_code}' \
+      --connect-timeout 15 --max-time 30 "${url}" || true
   )"
   if [[ "${status}" != "200" ]]; then
     die "Preflight failed (HTTP ${status}). Proxy path to Cisco repo is broken.
@@ -301,8 +301,28 @@ prompt_provisioning_key() {
   printf '%s' "${key}"
 }
 
+preflight_system_clock() {
+  local year
+  year="$(date -u +%Y)"
+  if (( year < 2025 )); then
+    die "System clock looks wrong (UTC year=${year}). GPG cosign verify will fail.
+
+Fix NTP then retry:
+  timedatectl status
+  sudo timedatectl set-ntp true
+  sudo systemctl restart systemd-timesyncd
+  # CS lab: /etc/systemd/timesyncd.conf.d/cisco.conf → NTP=10.64.58.50 ntp.esl.cisco.com"
+  fi
+  if command -v timedatectl >/dev/null 2>&1; then
+    if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q '^no$'; then
+      log "WARNING: NTP not synchronized. Run: sudo timedatectl set-ntp true && sudo systemctl restart systemd-timesyncd"
+    fi
+  fi
+}
+
 preflight_host() {
   log "Running preflight checks..."
+  preflight_system_clock
 
   if [[ -f /etc/os-release ]]; then
     # shellcheck source=/dev/null
