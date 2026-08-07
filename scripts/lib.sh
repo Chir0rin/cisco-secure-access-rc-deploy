@@ -47,6 +47,9 @@ load_lab_proxy() {
     source "${proxy_file}"
     log "Loaded proxy from ${proxy_file}"
   fi
+  if [[ "${no_proxy:-}${NO_PROXY:-}" == *cisco.com* ]]; then
+    log "WARNING: no_proxy includes .cisco.com — RC setup may fail. Remove it from ${proxy_file}"
+  fi
 }
 
 validate_connector_name() {
@@ -253,7 +256,16 @@ ensure_connector_installed() {
   download_setup_script "${setup}"
 
   log "Running Cisco setup_connector.sh (installs Docker + /opt/connector)..."
-  run_as_root bash "${setup}"
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  if [[ -n "${proxy}" ]]; then
+    # setup_connector.sh downloads from *.cisco.com; no_proxy must not bypass proxy on CS lab.
+    run_as_root env -u no_proxy -u NO_PROXY \
+      http_proxy="${proxy}" https_proxy="${proxy}" \
+      HTTP_PROXY="${proxy}" HTTPS_PROXY="${proxy}" \
+      bash "${setup}"
+  else
+    run_as_root bash "${setup}"
+  fi
 
   trap - RETURN
   rm -rf "${workdir}"
