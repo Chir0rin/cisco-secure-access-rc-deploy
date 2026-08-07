@@ -229,7 +229,10 @@ download_setup_script() {
   log "Downloading setup_connector.sh from ${url}"
   if [[ -n "${proxy}" ]]; then
     log "Using proxy ${proxy}"
-    curl -fsSL --connect-timeout 30 --max-time 600 -x "${proxy}" -o "${dest}" "${url}"
+    # no_proxy often lists .cisco.com; that bypasses proxy for us.repo.acgw.sse.cisco.com
+    # and times out on CS lab segments. Force proxy for this download only.
+    env -u no_proxy -u NO_PROXY curl -fsSL --connect-timeout 30 --max-time 600 \
+      -x "${proxy}" -o "${dest}" "${url}"
   else
     curl -fsSL --connect-timeout 30 --max-time 600 -o "${dest}" "${url}"
   fi
