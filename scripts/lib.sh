@@ -13,6 +13,7 @@ CS_LAB_PROXY_CANDIDATES=(
   "http://tyoidc5-dmz-wsa-2.cisco.com:80"
   "http://proxy.esl.cisco.com:80"
 )
+CS_LAB_PROXY_STATE="/var/lib/rc-deploy/last-good-proxy"
 
 # stderr, so log lines never leak into command substitutions (e.g. captured keys)
 log() {
@@ -60,11 +61,26 @@ load_lab_proxy() {
 # Same curl path as patched setup_connector.sh (sudo curl -x proxy).
 probe_cisco_repo_via_proxy() {
   local proxy="$1"
+  local connect_timeout="${2:-30}"
+  local max_time="${3:-60}"
   local url="${RC_SETUP_URL:-${RC_SETUP_URL_DEFAULT}}"
   run_as_root env -u no_proxy -u NO_PROXY \
     http_proxy="${proxy}" https_proxy="${proxy}" \
     curl -x "${proxy}" -fsSL -o /dev/null -w '%{http_code}' \
-    --connect-timeout 10 --max-time 45 "${url}" 2>/dev/null || echo 000
+    --connect-timeout "${connect_timeout}" --max-time "${max_time}" "${url}" 2>/dev/null || echo 000
+}
+
+remember_good_proxy() {
+  run_as_root mkdir -p "$(dirname "${CS_LAB_PROXY_STATE}")"
+  printf '%s\n' "$1" | run_as_root tee "${CS_LAB_PROXY_STATE}" >/dev/null
+}
+
+read_last_good_proxy() {
+  if [[ -f "${CS_LAB_PROXY_STATE}" ]]; then
+    cat "${CS_LAB_PROXY_STATE}" 2>/dev/null || true
+    return
+  fi
+  run_as_root cat "${CS_LAB_PROXY_STATE}" 2>/dev/null || true
 }
 
 write_cs_lab_proxy_files() {
@@ -93,29 +109,43 @@ noproxy = \"${CS_LAB_NO_PROXY}\""
   export RC_HTTP_PROXY="${proxy}"
 }
 
-# Probe SharePoint-listed proxies; write config only for the one that works.
+# Probe SharePoint-listed proxies; prefer last success so wsa is not dropped on slow CONNECT.
 select_and_apply_cs_lab_proxy() {
   local -a ordered=() seen="" proxy status
   local url="${RC_SETUP_URL:-${RC_SETUP_URL_DEFAULT}}"
+  local current="${https_proxy:-${HTTP_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  local last_good
+  last_good="$(read_last_good_proxy)"
 
-  if [[ -n "${RC_HTTP_PROXY:-}" ]]; then
-    ordered+=("${RC_HTTP_PROXY}")
-    seen=" ${RC_HTTP_PROXY} "
-  fi
-  local candidate
-  for candidate in "${CS_LAB_PROXY_CANDIDATES[@]}"; do
-    [[ "${seen}" == *" ${candidate} "* ]] && continue
+  _add_proxy_candidate() {
+    local candidate="$1"
+    [[ -z "${candidate}" ]] && return
+    [[ "${seen}" == *" ${candidate} "* ]] && return
     ordered+=("${candidate}")
     seen+=" ${candidate} "
+  }
+
+  _add_proxy_candidate "${RC_HTTP_PROXY:-}"
+  _add_proxy_candidate "${last_good}"
+  _add_proxy_candidate "${current}"
+  local candidate
+  for candidate in "${CS_LAB_PROXY_CANDIDATES[@]}"; do
+    _add_proxy_candidate "${candidate}"
   done
 
-  log "Selecting CS lab proxy (GET ${url})"
+  log "Selecting CS lab proxy (GET ${url}, connect-timeout 30s)"
   for proxy in "${ordered[@]}"; do
     log "  probe ${proxy}"
-    status="$(probe_cisco_repo_via_proxy "${proxy}")"
+    status="$(probe_cisco_repo_via_proxy "${proxy}" 30 60)"
     log "  → HTTP ${status}"
+    if [[ "${status}" != "200" ]] && [[ "${proxy}" == *"wsa"* ]]; then
+      log "  wsa slow; retry once (connect-timeout 60s)"
+      status="$(probe_cisco_repo_via_proxy "${proxy}" 60 90)"
+      log "  → HTTP ${status}"
+    fi
     if [[ "${status}" == "200" ]]; then
       write_cs_lab_proxy_files "${proxy}"
+      remember_good_proxy "${proxy}"
       log "Using proxy ${proxy}"
       return 0
     fi
