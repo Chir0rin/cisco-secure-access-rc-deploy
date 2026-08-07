@@ -52,6 +52,20 @@ load_lab_proxy() {
   fi
 }
 
+# setup_connector.sh calls "sudo curl" without -E; env vars do not reach it.
+# /etc/curlrc is read by all curl invocations (including sudo).
+ensure_curl_proxy() {
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  [[ -n "${proxy}" ]] || return 0
+  if [[ -f /etc/curlrc ]] && grep -q "proxy.esl.cisco.com" /etc/curlrc 2>/dev/null; then
+    return 0
+  fi
+  log "Writing /etc/curlrc so setup_connector.sh sudo curl uses proxy"
+  run_as_root tee /etc/curlrc >/dev/null <<EOF
+proxy = "${proxy}"
+EOF
+}
+
 validate_connector_name() {
   local name="$1"
   if [[ ! "${name}" =~ ^[A-Za-z0-9_-]{1,40}$ ]]; then

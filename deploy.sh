@@ -14,6 +14,7 @@ main() {
 
   load_lab_proxy
   load_rc_env "${ROOT}/rc.env"
+  ensure_curl_proxy
 
   if [[ -z "${RC_NAME:-}" || -z "${RC_PROVISIONING_KEY:-}" ]]; then
     print_deploy_inputs
