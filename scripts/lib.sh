@@ -47,23 +47,55 @@ load_lab_proxy() {
     source "${proxy_file}"
     log "Loaded proxy from ${proxy_file}"
   fi
-  if [[ "${no_proxy:-}${NO_PROXY:-}" == *cisco.com* ]]; then
-    log "WARNING: no_proxy includes .cisco.com — RC setup may fail. Remove it from ${proxy_file}"
-  fi
 }
 
-# setup_connector.sh calls "sudo curl" without -E; env vars do not reach it.
-# /etc/curlrc is read by all curl invocations (including sudo).
-ensure_curl_proxy() {
+# Root cause (CS lab): no_proxy lists .cisco.com → curl bypasses proxy for
+# us.repo.acgw.sse.cisco.com. setup_connector.sh uses bare "sudo curl" (no -x),
+# so pam-loaded /etc/environment + no_proxy wins; direct egress fails → HTTP 000.
+fix_lab_proxy_config() {
   local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
   [[ -n "${proxy}" ]] || return 0
-  if [[ -f /etc/curlrc ]] && grep -q "proxy.esl.cisco.com" /etc/curlrc 2>/dev/null; then
-    return 0
+
+  local proxy_file="/etc/profile.d/proxy.sh"
+  if [[ -f "${proxy_file}" ]] && grep -qE '\.cisco\.com' "${proxy_file}"; then
+    log "Fixing ${proxy_file}: removing .cisco.com from no_proxy (Cisco repo needs proxy on CS lab)"
+    run_as_root sed -i -E 's/,\?\.cisco\.com//g' "${proxy_file}"
+    # shellcheck source=/dev/null
+    source "${proxy_file}"
   fi
-  log "Writing /etc/curlrc so setup_connector.sh sudo curl uses proxy"
+
+  if [[ -f /etc/environment ]] && grep -qE 'no_proxy=.*\.cisco\.com' /etc/environment; then
+    log "Fixing /etc/environment: removing .cisco.com from no_proxy"
+    run_as_root sed -i -E 's/,\?\.cisco\.com//g' /etc/environment
+  fi
+
+  log "Writing /etc/curlrc (sudo curl does not inherit shell http_proxy)"
   run_as_root tee /etc/curlrc >/dev/null <<EOF
 proxy = "${proxy}"
+noproxy = "localhost,127.0.0.1,192.168.2.0/24,.esl.cisco.com"
 EOF
+}
+
+# Same call path as setup_connector.sh check_config_file() line ~418.
+preflight_sudo_curl_cisco_repo() {
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  [[ -n "${proxy}" ]] || return 0
+
+  local url="https://us.repo.acgw.sse.cisco.com/scripts/latest/cosign-linux-amd64"
+  log "Preflight: sudo curl (same as setup_connector.sh) → ${url}"
+  local status
+  status="$(run_as_root curl -s -L -o /dev/null -w '%{http_code}' --connect-timeout 30 --max-time 120 "${url}" || true)"
+  if [[ "${status}" != "200" ]]; then
+    die "Preflight failed (HTTP ${status}). sudo curl cannot reach Cisco repo.
+
+Root cause: setup_connector.sh runs 'sudo curl' without -x. On CS lab, *.cisco.com
+must go through proxy.esl.cisco.com — not direct. no_proxy must NOT include .cisco.com.
+
+Check:
+  grep no_proxy /etc/profile.d/proxy.sh /etc/environment /etc/curlrc 2>/dev/null
+  sudo curl -v -o /dev/null '${url}'"
+  fi
+  log "Preflight OK (HTTP ${status})"
 }
 
 validate_connector_name() {
