@@ -155,14 +155,14 @@ preflight_cisco_repo_gate() {
   local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
   [[ -n "${proxy}" ]] || return 0
 
-  local url="https://us.repo.acgw.sse.cisco.com/scripts/latest/cosign-linux-amd64"
-  log "Preflight: Cisco repo via proxy (HEAD) → ${url}"
+  local url="${RC_SETUP_URL:-${RC_SETUP_URL_DEFAULT}}"
+  log "Preflight: Cisco repo via proxy → ${url}"
   local status
   status="$(
     run_as_root env -u no_proxy -u NO_PROXY \
       http_proxy="${proxy}" https_proxy="${proxy}" \
-      curl -x "${proxy}" -sI -o /dev/null -w '%{http_code}' \
-      --connect-timeout 15 --max-time 30 "${url}" || true
+      curl -x "${proxy}" -fsSL -o /dev/null -w '%{http_code}' \
+      --connect-timeout 15 --max-time 60 "${url}" || true
   )"
   if [[ "${status}" != "200" ]]; then
     die "Preflight failed (HTTP ${status}). Proxy path to Cisco repo is broken.
