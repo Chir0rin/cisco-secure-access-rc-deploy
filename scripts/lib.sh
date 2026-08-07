@@ -76,26 +76,39 @@ noproxy = "localhost,127.0.0.1,192.168.2.0/24,.esl.cisco.com"
 EOF
 }
 
-# Same call path as setup_connector.sh check_config_file() line ~418.
+# Diagnose CS lab proxy bypass: bare sudo curl vs proxy-forced (patched setup_connector.sh).
 preflight_sudo_curl_cisco_repo() {
   local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
   [[ -n "${proxy}" ]] || return 0
 
   local url="https://us.repo.acgw.sse.cisco.com/scripts/latest/cosign-linux-amd64"
-  log "Preflight: sudo curl (same as setup_connector.sh) → ${url}"
-  local status
-  status="$(run_as_root curl -s -L -o /dev/null -w '%{http_code}' --connect-timeout 30 --max-time 120 "${url}" || true)"
-  if [[ "${status}" != "200" ]]; then
-    die "Preflight failed (HTTP ${status}). sudo curl cannot reach Cisco repo.
 
-Root cause: setup_connector.sh runs 'sudo curl' without -x. On CS lab, *.cisco.com
-must go through proxy.esl.cisco.com — not direct. no_proxy must NOT include .cisco.com.
+  log "Preflight A: bare sudo curl (unpatched setup_connector.sh) → ${url}"
+  local status_a
+  status_a="$(run_as_root curl -s -L -o /dev/null -w '%{http_code}' --connect-timeout 30 --max-time 120 "${url}" || true)"
+  log "  → HTTP ${status_a} (000 = no_proxy/.cisco.com bypassed proxy on CS lab)"
 
-Check:
-  grep no_proxy /etc/profile.d/proxy.sh /etc/environment /etc/curlrc 2>/dev/null
-  sudo curl -v -o /dev/null '${url}'"
+  log "Preflight B: proxy-forced sudo curl (patched setup_connector.sh path)"
+  local status_b
+  status_b="$(
+    run_as_root env -u no_proxy -u NO_PROXY \
+      http_proxy="${proxy}" https_proxy="${proxy}" \
+      curl -x "${proxy}" -s -L -o /dev/null -w '%{http_code}' \
+      --connect-timeout 30 --max-time 120 "${url}" || true
+  )"
+
+  if [[ "${status_b}" != "200" ]]; then
+    die "Preflight B failed (HTTP ${status_b}). Proxy path broken — fix proxy.esl.cisco.com / DNS first.
+
+  A (bare sudo curl) = ${status_a}
+  B (curl -x proxy)   = ${status_b}
+
+  grep -E 'proxy|no_proxy' /etc/profile.d/proxy.sh /etc/environment /etc/curlrc 2>/dev/null"
   fi
-  log "Preflight OK (HTTP ${status})"
+  log "Preflight B OK (HTTP ${status_b})"
+  if [[ "${status_a}" != "200" ]]; then
+    log "A≠B: setup_connector.sh will be patched (sudo curl → curl -x) before install."
+  fi
 }
 
 validate_connector_name() {
@@ -288,6 +301,30 @@ download_setup_script() {
   chmod +x "${dest}"
 }
 
+# Cisco setup_connector.sh calls bare "sudo curl" — ignores our shell proxy and
+# no_proxy=.cisco.com makes it bypass proxy. Patch the script after download.
+patch_setup_connector_for_proxy() {
+  local setup="$1"
+  local proxy="${2:-}"
+  [[ -n "${proxy}" ]] || return 0
+  [[ -f "${setup}" ]] || return 0
+
+  if grep -q 'RC_DEPLOY_PROXY_PATCHED' "${setup}"; then
+    return 0
+  fi
+
+  log "Patching setup_connector.sh: force proxy on sudo curl (CS lab egress)"
+  local esc="${proxy//\\/\\\\}"
+  esc="${esc//|/\\|}"
+  esc="${esc//&/\\&}"
+
+  sed -i \
+    -e "s|sudo curl|sudo env -u no_proxy -u NO_PROXY http_proxy=${esc} https_proxy=${esc} curl -x ${esc}|g" \
+    "${setup}"
+
+  printf '\n# RC_DEPLOY_PROXY_PATCHED=1\n' >>"${setup}"
+}
+
 ensure_connector_installed() {
   if [[ -x "${RC_CONNECTOR_SH}" ]]; then
     log "Connector install already present at ${RC_CONNECTOR_SH}; skipping setup_connector.sh"
@@ -301,10 +338,11 @@ ensure_connector_installed() {
   local setup="${workdir}/setup_connector.sh"
   download_setup_script "${setup}"
 
-  log "Running Cisco setup_connector.sh (installs Docker + /opt/connector)..."
   local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  patch_setup_connector_for_proxy "${setup}" "${proxy}"
+
+  log "Running Cisco setup_connector.sh (installs Docker + /opt/connector)..."
   if [[ -n "${proxy}" ]]; then
-    # setup_connector.sh downloads from *.cisco.com; no_proxy must not bypass proxy on CS lab.
     run_as_root env -u no_proxy -u NO_PROXY \
       http_proxy="${proxy}" https_proxy="${proxy}" \
       HTTP_PROXY="${proxy}" HTTPS_PROXY="${proxy}" \
