@@ -4,6 +4,9 @@
 set -euo pipefail
 
 RC_CONNECTOR_SH="/opt/connector/install/connector.sh"
+RC_IMAGE_NAME_PATH="/opt/connector/image_name"
+RC_INIT_IMAGE_PATH="/opt/connector/install/init_image"
+CISCO_RC_REPO="ciscosecure/resource-connector"
 RC_SETUP_URL_DEFAULT="https://us.repo.acgw.sse.cisco.com/scripts/latest/setup_connector.sh"
 # CS lab SharePoint: tyoidc5-dmz-wsa-* faster than proxy.esl for 192.168.2.x egress
 CS_LAB_PROXY_DEFAULT="http://tyoidc5-dmz-wsa-1.cisco.com:80"
@@ -161,18 +164,20 @@ cs_lab_prepare_host() {
   ensure_docker_daemon_proxy
 }
 
-# docker pull uses the daemon, not shell http_proxy — required for registry-1.docker.io on CS lab.
-ensure_docker_daemon_proxy() {
-  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
-  [[ -n "${proxy}" ]] || return 0
+# registry-1.docker.io returns 401 without auth when reachable.
+probe_docker_registry_via_proxy() {
+  local proxy="$1" connect="${2:-30}"
+  local code
+  code="$(env -u no_proxy -u NO_PROXY curl -sS -o /dev/null -w '%{http_code}' \
+    --connect-timeout "${connect}" --max-time "$((connect + 60))" \
+    -x "${proxy}" "https://registry-1.docker.io/v2/" 2>/dev/null || echo 000)"
+  [[ "${code}" == "401" || "${code}" == "200" ]]
+}
 
+write_docker_daemon_proxy() {
+  local proxy="$1"
   local dropin="/etc/systemd/system/docker.service.d/http-proxy.conf"
-  if [[ -f "${dropin}" ]] && grep -qF "${proxy}" "${dropin}" 2>/dev/null; then
-    log "Docker daemon proxy OK (${proxy})"
-    return 0
-  fi
-
-  log "Configuring Docker daemon proxy for docker pull → ${proxy}"
+  log "Configuring Docker daemon proxy → ${proxy}"
   run_as_root mkdir -p /etc/systemd/system/docker.service.d
   run_as_root tee "${dropin}" >/dev/null <<EOF
 [Service]
@@ -182,16 +187,95 @@ Environment="NO_PROXY=${CS_LAB_NO_PROXY}"
 EOF
   run_as_root systemctl daemon-reload
   run_as_root systemctl restart docker
-  sleep 2
+  sleep 3
 }
 
-ensure_connector_image() {
-  if run_as_root docker image inspect ciscosecure/resource-connector:latest &>/dev/null; then
+# docker pull uses the daemon, not shell http_proxy — required for registry-1.docker.io on CS lab.
+ensure_docker_daemon_proxy() {
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  [[ -n "${proxy}" ]] || die "No HTTP proxy in environment; CS lab needs proxy for Docker Hub."
+
+  local dropin="/etc/systemd/system/docker.service.d/http-proxy.conf"
+  local need_restart=0
+  if [[ ! -f "${dropin}" ]] || ! grep -qF "${proxy}" "${dropin}" 2>/dev/null; then
+    need_restart=1
+  elif [[ ! -s "${RC_IMAGE_NAME_PATH}" ]]; then
+    log "image_name missing — restarting Docker to ensure daemon proxy is active"
+    need_restart=1
+  fi
+
+  if [[ "${need_restart}" -eq 1 ]]; then
+    write_docker_daemon_proxy "${proxy}"
+  else
+    log "Docker daemon proxy configured (${proxy})"
+  fi
+
+  if ! probe_docker_registry_via_proxy "${proxy}" 30; then
+    log "registry-1.docker.io unreachable via ${proxy}; probing alternate proxies"
+    local candidate
+    for candidate in "${CS_LAB_PROXY_CANDIDATES[@]}"; do
+      [[ "${candidate}" == "${proxy}" ]] && continue
+      log "  docker registry probe ${candidate}"
+      if probe_docker_registry_via_proxy "${candidate}" 60; then
+        write_docker_daemon_proxy "${candidate}"
+        write_cs_lab_proxy_files "${candidate}"
+        remember_good_proxy "${candidate}"
+        proxy="${candidate}"
+        break
+      fi
+    done
+  fi
+
+  probe_docker_registry_via_proxy "${proxy}" 60 \
+    || die "registry-1.docker.io not reachable (curl via ${proxy}). Docker pull will fail."
+}
+
+connector_install_complete() {
+  [[ -x "${RC_CONNECTOR_SH}" ]] && [[ -s "${RC_IMAGE_NAME_PATH}" ]]
+}
+
+ensure_connector_images() {
+  if connector_install_complete; then
+    log "Connector image OK ($(run_as_root cat "${RC_IMAGE_NAME_PATH}"))"
     return 0
   fi
-  [[ -x "${RC_CONNECTOR_SH}" ]] || return 0
-  log "Pulling ciscosecure/resource-connector:latest (prior docker pull may have failed without daemon proxy)"
-  run_as_root docker pull ciscosecure/resource-connector:latest
+
+  [[ -x "${RC_CONNECTOR_SH}" ]] \
+    || die "connector.sh missing — setup_connector.sh did not finish."
+
+  ensure_docker_daemon_proxy
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  local latest="${CISCO_RC_REPO}:latest"
+
+  log "Pulling ${latest} (partial install — image_name was missing)..."
+  run_as_root docker pull "${latest}" \
+    || die "docker pull ${latest} failed. Try: sudo systemctl restart docker && sudo docker info | grep -i proxy"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    run_as_root apt-get update -qq
+    run_as_root apt-get install -y -qq jq
+  fi
+
+  local digest_value latest_version version_ref
+  digest_value="$(run_as_root docker inspect "${latest}" --format='{{index .RepoDigests 0}}' | sed 's/.*@//')"
+  [[ -n "${digest_value}" ]] || die "Could not read digest from ${latest}"
+
+  log "Resolving version tag from Docker Hub API..."
+  latest_version="$(env -u no_proxy -u NO_PROXY http_proxy="${proxy}" https_proxy="${proxy}" \
+    curl -fsSL --connect-timeout 30 --max-time 180 -x "${proxy}" \
+    "https://hub.docker.com/v2/repositories/${CISCO_RC_REPO}/tags" \
+    -H 'Content-Type: application/json' |
+    jq -r --arg digest "${digest_value}" \
+      '.results[] | select(.digest == $digest and .name != "latest") | .name' | head -1)"
+  [[ -n "${latest_version}" ]] || die "Could not resolve version tag for ${CISCO_RC_REPO}"
+
+  version_ref="${CISCO_RC_REPO}:${latest_version}"
+  log "Pulling ${version_ref}..."
+  run_as_root docker pull "${version_ref}" || die "docker pull ${version_ref} failed"
+
+  log "Writing ${RC_IMAGE_NAME_PATH}"
+  printf '%s\n' "${version_ref}" | run_as_root tee "${RC_IMAGE_NAME_PATH}" >/dev/null
+  printf '%s\n' "${version_ref}" | run_as_root tee "${RC_INIT_IMAGE_PATH}" >/dev/null
 }
 
 ensure_cs_lab_ntp() {
@@ -488,8 +572,14 @@ patch_setup_connector_for_proxy() {
 }
 
 ensure_connector_installed() {
+  if connector_install_complete; then
+    log "Connector install complete at ${RC_CONNECTOR_SH}; skipping setup_connector.sh"
+    return 0
+  fi
+
   if [[ -x "${RC_CONNECTOR_SH}" ]]; then
-    log "Connector install already present at ${RC_CONNECTOR_SH}; skipping setup_connector.sh"
+    log "Partial install: ${RC_CONNECTOR_SH} exists but ${RC_IMAGE_NAME_PATH} is missing"
+    log "Skipping setup_connector.sh — will pull images in ensure_connector_images"
     return 0
   fi
 
@@ -524,13 +614,17 @@ ensure_connector_installed() {
   rm -rf "${workdir}"
 
   [[ -x "${RC_CONNECTOR_SH}" ]] || die "setup_connector.sh finished but ${RC_CONNECTOR_SH} is missing."
+  ensure_connector_images
 }
 
 launch_connector() {
   local name="$1"
   local key="$2"
+  [[ -s "${RC_IMAGE_NAME_PATH}" ]] \
+    || die "${RC_IMAGE_NAME_PATH} missing — image pull did not complete."
   log "Launching connector '${name}'..."
-  run_as_root "${RC_CONNECTOR_SH}" launch --name "${name}" --key "${key}"
+  run_as_root "${RC_CONNECTOR_SH}" launch --name "${name}" --key "${key}" \
+    || die "connector launch failed (see /opt/connector/data/logs/)"
 }
 
 print_next_steps() {

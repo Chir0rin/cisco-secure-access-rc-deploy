@@ -30,7 +30,7 @@ main() {
   confirm_launch_inputs "${name}" "${key}"
 
   ensure_connector_installed
-  ensure_connector_image
+  ensure_connector_images
   launch_connector "${name}" "${key}"
   print_next_steps
 }
