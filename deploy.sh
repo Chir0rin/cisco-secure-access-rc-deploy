@@ -14,6 +14,7 @@ main() {
 
   load_lab_proxy
   load_rc_env "${ROOT}/rc.env"
+  apply_cs_lab_proxy
   fix_lab_proxy_config
   preflight_cisco_repo_gate
 

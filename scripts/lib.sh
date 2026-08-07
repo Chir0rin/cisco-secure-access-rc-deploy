@@ -5,6 +5,9 @@ set -euo pipefail
 
 RC_CONNECTOR_SH="/opt/connector/install/connector.sh"
 RC_SETUP_URL_DEFAULT="https://us.repo.acgw.sse.cisco.com/scripts/latest/setup_connector.sh"
+# CS lab SharePoint: tyoidc5-dmz-wsa-* faster than proxy.esl for 192.168.2.x egress
+CS_LAB_PROXY_DEFAULT="http://tyoidc5-dmz-wsa-1.cisco.com:80"
+CS_LAB_NO_PROXY="localhost,127.0.0.1,192.168.2.0/24,10.70.91.0/24,.esl.cisco.com"
 
 # stderr, so log lines never leak into command substitutions (e.g. captured keys)
 log() {
@@ -52,6 +55,48 @@ load_lab_proxy() {
 # Root cause (CS lab): no_proxy lists .cisco.com → curl bypasses proxy for
 # us.repo.acgw.sse.cisco.com. setup_connector.sh uses bare "sudo curl" (no -x),
 # so pam-loaded /etc/environment + no_proxy wins; direct egress fails → HTTP 000.
+apply_cs_lab_proxy() {
+  local proxy="${RC_HTTP_PROXY:-${CS_LAB_PROXY_DEFAULT}}"
+  local proxy_file="/etc/profile.d/proxy.sh"
+  local rewrite=0
+
+  if [[ ! -f "${proxy_file}" ]]; then
+    rewrite=1
+  elif ! grep -qF "${proxy}" "${proxy_file}"; then
+    rewrite=1
+  elif grep -q 'proxy\.esl\.cisco\.com' "${proxy_file}"; then
+    rewrite=1
+  fi
+
+  if [[ "${rewrite}" -eq 0 ]]; then
+    export http_proxy="${proxy}"
+    export https_proxy="${proxy}"
+    export no_proxy="${CS_LAB_NO_PROXY}"
+    return 0
+  fi
+
+  log "Setting CS lab proxy to ${proxy} (Tokyo WSA; override with RC_HTTP_PROXY in rc.env)"
+  run_as_root tee "${proxy_file}" >/dev/null <<EOF
+export http_proxy="${proxy}"
+export https_proxy="${proxy}"
+export no_proxy="${CS_LAB_NO_PROXY}"
+EOF
+  export http_proxy="${proxy}"
+  export https_proxy="${proxy}"
+  export no_proxy="${CS_LAB_NO_PROXY}"
+
+  run_as_root tee /etc/apt/apt.conf.d/95proxies >/dev/null <<EOF
+Acquire::http::Proxy "${proxy}";
+Acquire::https::Proxy "${proxy}";
+EOF
+
+  if [[ -f /etc/environment ]] && grep -qE '^https?_proxy=' /etc/environment; then
+    run_as_root sed -i "s|^http_proxy=.*|http_proxy=\"${proxy}\"|" /etc/environment
+    run_as_root sed -i "s|^https_proxy=.*|https_proxy=\"${proxy}\"|" /etc/environment
+    run_as_root sed -i -E 's/,\?\.cisco\.com//g' /etc/environment
+  fi
+}
+
 fix_lab_proxy_config() {
   local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
   [[ -n "${proxy}" ]] || return 0
@@ -169,11 +214,13 @@ load_rc_env() {
   [[ -f "${file}" ]] || return 0
 
   local env_name="${RC_NAME:-}" env_key="${RC_PROVISIONING_KEY:-}" env_yes="${RC_YES:-}"
+  local env_proxy="${RC_HTTP_PROXY:-}"
   # shellcheck source=/dev/null
   source "${file}"
   [[ -n "${env_name}" ]] && RC_NAME="${env_name}"
   [[ -n "${env_key}" ]] && RC_PROVISIONING_KEY="${env_key}"
   [[ -n "${env_yes}" ]] && RC_YES="${env_yes}"
+  [[ -n "${env_proxy}" ]] && RC_HTTP_PROXY="${env_proxy}"
 
   case "${RC_PROVISIONING_KEY:-}" in
     '' | *REPLACE_ME* | *PASTE_* ) RC_PROVISIONING_KEY="" ;;
