@@ -329,6 +329,19 @@ prompt_provisioning_key() {
   printf '%s' "${key}"
 }
 
+# rc.env is shared across RC VMs and now targets rc02. Refuse to launch on a
+# host that already runs a connector (e.g. the rc01 VM) — a second launch there
+# would enroll a duplicate under the wrong name.
+preflight_no_existing_connector() {
+  if systemctl is-active --quiet connector_svc 2>/dev/null; then
+    die "connector_svc is already active — this host already runs a connector.
+rc.env targets '${RC_NAME:-unset}'; launching here would enroll a duplicate.
+
+  This host's connector : sudo systemctl status connector_svc --no-pager
+  To really redeploy    : sudo ${RC_CONNECTOR_SH} stop --destroy  (revoke in dashboard first)"
+  fi
+}
+
 preflight_system_clock() {
   local year
   year="$(date -u +%Y)"
