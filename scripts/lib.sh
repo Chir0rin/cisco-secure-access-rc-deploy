@@ -6,8 +6,9 @@ set -euo pipefail
 RC_CONNECTOR_SH="/opt/connector/install/connector.sh"
 RC_SETUP_URL_DEFAULT="https://us.repo.acgw.sse.cisco.com/scripts/latest/setup_connector.sh"
 
+# stderr, so log lines never leak into command substitutions (e.g. captured keys)
 log() {
-  printf '[rc-deploy] %s\n' "$*"
+  printf '[rc-deploy] %s\n' "$*" >&2
 }
 
 die() {
@@ -82,6 +83,31 @@ print_key_preview() {
   log "Provisioning key captured: $(mask_provisioning_key "$1")"
 }
 
+# Load RC_NAME / RC_PROVISIONING_KEY from an optional rc.env file.
+# Values already set in the environment win; placeholder values are ignored.
+load_rc_env() {
+  local file="$1"
+  [[ -f "${file}" ]] || return 0
+
+  local env_name="${RC_NAME:-}" env_key="${RC_PROVISIONING_KEY:-}" env_yes="${RC_YES:-}"
+  # shellcheck source=/dev/null
+  source "${file}"
+  [[ -n "${env_name}" ]] && RC_NAME="${env_name}"
+  [[ -n "${env_key}" ]] && RC_PROVISIONING_KEY="${env_key}"
+  [[ -n "${env_yes}" ]] && RC_YES="${env_yes}"
+
+  case "${RC_PROVISIONING_KEY:-}" in
+    '' | *REPLACE_ME* | *PASTE_* ) RC_PROVISIONING_KEY="" ;;
+  esac
+  case "${RC_NAME:-}" in
+    '' | *REPLACE_ME* ) RC_NAME="" ;;
+  esac
+
+  if [[ -n "${RC_NAME:-}" || -n "${RC_PROVISIONING_KEY:-}" ]]; then
+    log "Loaded deploy inputs from ${file}"
+  fi
+}
+
 confirm_launch_inputs() {
   local name="$1"
   local key="$2"
@@ -94,6 +120,10 @@ Review before launch:
 
   Compare start/end with the dashboard key before continuing.
 EOF
+  if [[ "${RC_YES:-}" == "1" ]]; then
+    log "RC_YES=1 set; skipping confirmation."
+    return 0
+  fi
   local answer
   read -r -p "Proceed with launch? [y/N]: " answer
   case "${answer}" in
@@ -139,7 +169,7 @@ prompt_provisioning_key() {
     return
   fi
   read -r -s -p "Provisioning key (from connector group → View Provisioning Key): " key
-  echo
+  echo >&2
   key="$(validate_provisioning_key "${key}")"
   print_key_preview "${key}"
   printf '%s' "${key}"
