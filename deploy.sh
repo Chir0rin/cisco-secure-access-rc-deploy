@@ -14,6 +14,7 @@ main() {
 
   load_lab_proxy
   load_rc_env "${ROOT}/rc.env"
+  preflight_no_existing_connector
   apply_cs_lab_proxy
   fix_lab_proxy_config
   ensure_cs_lab_ntp
