@@ -535,6 +535,111 @@ check_package_manager() {
   log "Package manager: OK"
 }
 
+# HTTP(S) reachability for RC enrollment (Dashboard "Confirm Connectors").
+# 000 = timeout/refused. Any other code ≈ TCP+TLS reached the service.
+_rc_egress_curl_code() {
+  local url="$1" proxy="${2:-}" connect="${3:-20}"
+  if [[ -n "${proxy}" ]]; then
+    env -u no_proxy -u NO_PROXY curl -sS -o /dev/null -w '%{http_code}' \
+      --connect-timeout "${connect}" --max-time "$((connect + 40))" \
+      -x "${proxy}" "${url}" 2>/dev/null || echo 000
+  else
+    curl -sS -o /dev/null -w '%{http_code}' \
+      --connect-timeout "${connect}" --max-time "$((connect + 40))" \
+      "${url}" 2>/dev/null || echo 000
+  fi
+}
+
+_rc_egress_tcp_open() {
+  local host="$1" port="$2" connect="${3:-10}"
+  if timeout "${connect}" bash -c "echo >/dev/tcp/${host}/${port}" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+_rc_egress_container_tcp() {
+  local container="$1" host="$2" port="$3" connect="${4:-10}"
+  run_as_root docker exec "${container}" timeout "${connect}" \
+    bash -c "echo >/dev/tcp/${host}/${port}" 2>/dev/null
+}
+
+_rc_egress_log_result() {
+  local where="$1" label="$2" detail="$3" code="$4"
+  if [[ "${code}" == "000" || "${code}" == "CLOSED" || "${code}" == "FAIL" ]]; then
+    log "FAIL ${where} | ${label} | ${detail} | ${code}"
+    return 1
+  fi
+  log "OK   ${where} | ${label} | ${detail} | ${code}"
+  return 0
+}
+
+# Check host (proxy) vs RC container (no proxy) to SSE enrollment destinations.
+check_rc_sse_egress() {
+  local proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+  local container="${RC_NAME:-}"
+  [[ -n "${container}" ]] || container="$(hostname -s 2>/dev/null || true)"
+  local fails=0
+
+  log "=== SSE egress: host via proxy (install/apt path) ==="
+  log "proxy=${proxy:-<none>}"
+  local code
+  code="$(_rc_egress_curl_code "https://prod.acme.sse.cisco.com/" "${proxy}")"
+  _rc_egress_log_result "host+proxy" "enroll-cert" "prod.acme.sse.cisco.com:443" "${code}" || ((fails++)) || true
+  code="$(_rc_egress_curl_code "http://ssepki-prd.pureca.cryptosvcs.cisco.com/" "${proxy}")"
+  _rc_egress_log_result "host+proxy" "pureca" "ssepki-prd.pureca.cryptosvcs.cisco.com:80" "${code}" || ((fails++)) || true
+  code="$(_rc_egress_curl_code "https://us.repo.acgw.sse.cisco.com/scripts/latest/setup_connector.sh" "${proxy}")"
+  _rc_egress_log_result "host+proxy" "repo" "us.repo.acgw.sse.cisco.com:443" "${code}" || ((fails++)) || true
+  for region in apne1 apne3; do
+    code="$(_rc_egress_curl_code "https://${region}.acgw.sse.cisco.com/" "${proxy}")"
+    _rc_egress_log_result "host+proxy" "region" "${region}.acgw.sse.cisco.com:443" "${code}" || ((fails++)) || true
+  done
+
+  log "=== SSE egress: host DIRECT (no proxy) ==="
+  if _rc_egress_tcp_open "prod.acme.sse.cisco.com" 443 15; then
+    _rc_egress_log_result "host-direct" "enroll-cert" "prod.acme.sse.cisco.com:443" "OPEN"
+  else
+    _rc_egress_log_result "host-direct" "enroll-cert" "prod.acme.sse.cisco.com:443" "CLOSED" || ((fails++)) || true
+  fi
+  if _rc_egress_tcp_open "apne1.acgw.sse.cisco.com" 443 15; then
+    _rc_egress_log_result "host-direct" "region" "apne1.acgw.sse.cisco.com:443" "OPEN"
+  else
+    _rc_egress_log_result "host-direct" "region" "apne1.acgw.sse.cisco.com:443" "CLOSED" || ((fails++)) || true
+  fi
+
+  if [[ -n "${container}" ]] && run_as_root docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${container}"; then
+    log "=== SSE egress: RC container DIRECT (check-in uses this — NOT host proxy) ==="
+    if _rc_egress_container_tcp "${container}" "prod.acme.sse.cisco.com" 443 15; then
+      _rc_egress_log_result "container" "enroll-cert" "prod.acme.sse.cisco.com:443" "OPEN"
+    else
+      _rc_egress_log_result "container" "enroll-cert" "prod.acme.sse.cisco.com:443" "CLOSED" || ((fails++)) || true
+    fi
+    if _rc_egress_container_tcp "${container}" "apne1.acgw.sse.cisco.com" 443 15; then
+      _rc_egress_log_result "container" "region" "apne1.acgw.sse.cisco.com:443" "OPEN"
+    else
+      _rc_egress_log_result "container" "region" "apne1.acgw.sse.cisco.com:443" "CLOSED" || ((fails++)) || true
+    fi
+    if _rc_egress_container_tcp "${container}" "apne3.acgw.sse.cisco.com" 443 15; then
+      _rc_egress_log_result "container" "region" "apne3.acgw.sse.cisco.com:443" "OPEN"
+    else
+      _rc_egress_log_result "container" "region" "apne3.acgw.sse.cisco.com:443" "CLOSED" || ((fails++)) || true
+    fi
+  else
+    log "SKIP container probes — ${container:-<no name>} not running"
+  fi
+
+  log "=== Summary ==="
+  if (( fails == 0 )); then
+    log "All probes reachable. If Dashboard still WAITING: verify org/region + provisioning key (no Regenerate after launch)."
+    return 0
+  fi
+  log "FAIL: ${fails} probe(s) unreachable."
+  log "Install (proxy) can succeed while enroll fails if container cannot reach prod.acme.sse.cisco.com / *.acgw.sse.cisco.com directly."
+  log "Compare with working RC .80/.81 or open CS lab egress per:"
+  log "  https://docs.sse.cisco.com/sse-user-guide/docs/allow-resource-connector-traffic-to-secure-access"
+  return 1
+}
+
 preflight_host() {
   log "Running preflight checks..."
   preflight_system_clock
